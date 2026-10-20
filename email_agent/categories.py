@@ -18,7 +18,7 @@ CATEGORIES = {
     ),
     Category.PAYMENT_REQUEST: (
         "Invoice, bill or request for payment from a vendor.",
-        "Acknowledge the invoice number, amount and due date, and say it was sent to accounts payable.",
+        "Acknowledge the invoice number, amount and due date, and say the accounts team will review it and confirm.",
     ),
     Category.CUSTOMER_COMPLAINT: (
         "A customer complaining about a service, charge, deduction or delay.",

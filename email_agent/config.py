@@ -37,10 +37,11 @@ class Settings(BaseSettings):
     imap_drafts_folder: str = ""  # empty = find the folder flagged \Drafts
     mail_address: str = ""  # our own address (draft From, self-mail check); empty = imap_username
     mail_days: int = Field(7, ge=1, le=90)
+    apply_labels: bool = True  # add Triage/* labels; the outlook profile turns this off (not supported there)
 
-    # Sending replies: off unless AUTO_SEND=true. Only these categories (comma-separated), only replies
+    # Sending replies: on unless AUTO_SEND=false. Only these categories (comma-separated), only replies
     # without any guardrail flag, at most MAX_SENDS_PER_RUN per run. Everything else stays a draft.
-    auto_send: bool = False
+    auto_send: bool = True
     auto_send_categories: str = "customer_complaint,kyc_document"
     max_sends_per_run: int = Field(5, ge=0)
     smtp_host: str = ""  # login is the same as IMAP (username + password or OAuth token)

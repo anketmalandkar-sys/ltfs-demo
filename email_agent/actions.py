@@ -1,5 +1,5 @@
 """What happens after the guardrails decide: log, hand off for review, label, send or save drafts.
-Everything is opt-in. Sending (AUTO_SEND) only happens for allowed categories with no guardrail
+Sending (AUTO_SEND, on by default) only happens for allowed categories with no guardrail
 flags, at most max_sends per run and never twice for the same email; anything else stays a draft."""
 
 import json

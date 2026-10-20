@@ -1,8 +1,9 @@
 """Command line entry point.
 
-python -m email_agent.main --source mock [--fresh]
-python -m email_agent.main --source imap --profile gmail --limit 10 [--save-drafts] [--apply-labels]
-                           [--watch --interval 1500]
+python -m email_agent.main            # the mailbox from .env (MAIL_PROFILE, IMAP_USERNAME), or the mock inbox
+python -m email_agent.main --watch    # keep running and handle new mail as it arrives
+
+Drafts, labels and sending (AUTO_SEND) are on by default; see --help for the flags that turn them off.
 """
 
 import argparse
@@ -12,6 +13,8 @@ import os
 import sys
 import time
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 from .actions import Actions
 from .agent import Agent
@@ -31,10 +34,21 @@ MOCK_ADDRESS = "triage@ltfs-demo.local"
 log = logging.getLogger("email_agent")
 
 
+def profile_name(profile: str | None) -> str | None:
+    """--profile, else MAIL_PROFILE from the environment or .env."""
+    if profile:
+        return profile
+    if os.environ.get("MAIL_PROFILE"):
+        return os.environ["MAIL_PROFILE"]
+    if ENV_FILE and Path(ENV_FILE).is_file():
+        return dotenv_values(ENV_FILE).get("MAIL_PROFILE") or None
+    return None
+
+
 def load_settings(profile: str | None) -> Settings:
     """Environment > .env > config/<profile>.env > files in SECRETS_DIR."""
     env_files = []
-    if profile:
+    if profile := profile_name(profile):
         path = ROOT / "config" / f"{profile}.env"
         if not path.is_file():
             raise SystemExit(f"Unknown profile '{profile}': {path} not found")
@@ -79,8 +93,8 @@ def mail_login(settings: Settings, host_name: str, host: str) -> str:
     ]
     if missing:
         raise SystemExit(
-            f"Set {', '.join(missing)} for --source imap (try --profile gmail; secrets can also be "
-            f"files in {SECRETS_DIR})"
+            f"Set {', '.join(missing)} for the mailbox (MAIL_PROFILE=gmail|outlook|yahoo sets the servers; "
+            f"secrets can also be files in {SECRETS_DIR})"
         )
     return secret.get_secret_value()
 
@@ -97,8 +111,11 @@ def build_account(settings: Settings) -> ImapAccount:
 
 
 def build_sender(settings: Settings, source: str):
-    """None unless AUTO_SEND is on. SMTP logs in with the same credentials as IMAP."""
+    """None if AUTO_SEND is off, or no SMTP server is known. SMTP logs in with the same credentials as IMAP."""
     if not settings.auto_send:
+        return None
+    if source == "imap" and not settings.smtp_host:
+        log.warning("AUTO_SEND is on but SMTP_HOST is not set (use MAIL_PROFILE); replies are only saved as drafts")
         return None
     categories = ", ".join(sorted(c.value for c in settings.send_categories)) or "none"
     log.warning(
@@ -207,13 +224,24 @@ def wait_for_mail(watcher: ImapWatcher, interval: int) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Classify emails and draft replies, with guardrails.")
-    parser.add_argument("--source", choices=["mock", "imap"], default="mock")
-    parser.add_argument("--profile", help="provider settings from config/PROFILE.env, e.g. gmail, outlook, yahoo")
+    parser.add_argument(
+        "--source", choices=["mock", "imap"], help="default: imap if IMAP_USERNAME is set, otherwise mock"
+    )
+    parser.add_argument(
+        "--profile", help="provider settings from config/PROFILE.env: gmail, outlook, yahoo (default: MAIL_PROFILE)"
+    )
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument(
-        "--save-drafts", action="store_true", help="save replies as drafts (replies are only sent with AUTO_SEND)"
+        "--save-drafts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="save replies that are not sent as drafts (default: on)",
     )
-    parser.add_argument("--apply-labels", action="store_true", help="add Triage/* labels (IMAP keywords outside Gmail)")
+    parser.add_argument(
+        "--apply-labels",
+        action=argparse.BooleanOptionalAction,
+        help="add Triage/* labels, IMAP keywords outside Gmail (default: APPLY_LABELS, on)",
+    )
     parser.add_argument("--watch", action="store_true", help="keep running and handle new mail as it arrives")
     parser.add_argument(
         "--interval", type=int, default=300, help="max seconds between checks (IMAP wakes early on new mail)"
@@ -224,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = load_settings(args.profile)
+    args.source = args.source or ("imap" if settings.imap_username else "mock")
+    if args.apply_labels is None:
+        args.apply_labels = settings.apply_labels
     providers = setup_telemetry(settings.otel_traces_exporter)
     model = settings.gemini_model if settings.llm_provider == "gemini" else settings.hf_model
     prime_metrics(settings.llm_provider, model)

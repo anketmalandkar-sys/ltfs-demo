@@ -1,18 +1,12 @@
-# Secrets are Docker secrets: files in ./secrets/, mounted read-only at /run/secrets/ and never put in
-# environment variables (those show up in `docker inspect`). Create all four files first; leave unused
-# ones empty. See README section 3, "Quick start: Docker".
-secrets:
-  imap_password:    { file: ./secrets/imap_password }
-  imap_oauth_token: { file: ./secrets/imap_oauth_token }
-  gemini_api_key:   { file: ./secrets/gemini_api_key }
-  hf_token:         { file: ./secrets/hf_token }
+# Start:  docker compose up -d   (agent + Grafana on http://localhost:3000)
+# Secrets are files in ./secrets/ (gemini_api_key, imap_password, ...), mounted read-only at /run/secrets/
+# and never put in environment variables (those show up in `docker inspect`). Create only the ones you use.
+# Everything else (MAIL_PROFILE, IMAP_USERNAME, limits) is read from .env.
 
 services:
   email-agent:
     build: { context: ., target: runtime }
-    # Non-secret settings only: the provider profile, then optional overrides (IMAP_USERNAME, limits, ...)
-    env_file:
-      - path: config/${MAIL_PROFILE:-gmail}.env
+    env_file:  # non-secret settings only
       - path: .env
         required: false
     environment:
@@ -20,14 +14,13 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       # Raw LLM prompts/replies (customer email text!) in Tempo and Loki. Set false in .env to stop.
       OTEL_CAPTURE_CONTENT: ${OTEL_CAPTURE_CONTENT:-true}
-    secrets: [imap_password, imap_oauth_token, gemini_api_key, hf_token]
     volumes:
+      - ./secrets:/run/secrets:ro
       - ./output:/app/output  # the only writable path
-    # Deployed mode: wakes on new mail (IMAP IDLE), labels it and drafts replies (sending: AUTO_SEND).
-    # Tune in .env: MAIL_PROFILE, MAIL_LIMIT (emails per run), WATCH_INTERVAL (max seconds between checks).
-    # One-off run instead: docker compose run --rm email-agent --source mock
-    command: ["--source", "imap", "--profile", "${MAIL_PROFILE:-gmail}", "--limit", "${MAIL_LIMIT:-20}",
-              "--save-drafts", "--apply-labels", "--watch", "--interval", "${WATCH_INTERVAL:-1500}"]
+    # Keeps running: the mailbox from .env (IMAP_USERNAME set) or else the mock inbox. On new mail (IMAP IDLE)
+    # it labels emails, sends clean replies and saves the rest as drafts.
+    # One-off run instead: docker compose run --rm email-agent --limit 5
+    command: ["--watch", "--limit", "${MAIL_LIMIT:-20}", "--interval", "${WATCH_INTERVAL:-1500}"]
     restart: unless-stopped
     read_only: true
     tmpfs: [/tmp]

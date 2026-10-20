@@ -25,6 +25,8 @@ def env(monkeypatch, tmp_path):
         "AUTO_SEND_CATEGORIES",
         "SMTP_HOST",
         "SMTP_PORT",
+        "MAIL_PROFILE",
+        "APPLY_LABELS",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
@@ -206,10 +208,12 @@ def test_mock_watch_sleeps(env):
     assert slept == [7]
 
 
-def test_sending_is_off_by_default(env):
+def test_sending_is_on_by_default_and_can_be_turned_off(env):
     from email_agent.config import Settings
+    from email_agent.sender import MockSender
 
-    assert cli.build_sender(Settings(_env_file=None), "imap") is None
+    assert isinstance(cli.build_sender(Settings(_env_file=None), "mock"), MockSender)
+    assert cli.build_sender(Settings(_env_file=None, auto_send=False), "mock") is None
 
 
 def test_send_categories_are_validated(env):
@@ -223,27 +227,68 @@ def test_send_categories_are_validated(env):
             Settings(_env_file=None, auto_send_categories=bad)
 
 
-def test_imap_sending_needs_smtp_host_and_warns_when_on(env, caplog):
+def test_imap_sending_without_smtp_host_keeps_drafts(env, caplog):
     from email_agent.config import Settings
     from email_agent.sender import SmtpSender
 
-    creds = dict(_env_file=None, auto_send=True, imap_username="me@x.com", imap_password="p")
-    with pytest.raises(SystemExit, match="SMTP_HOST"):
-        cli.build_sender(Settings(**creds), "imap")
+    creds = dict(_env_file=None, imap_username="me@x.com", imap_password="p")
+    with caplog.at_level(logging.WARNING):
+        assert cli.build_sender(Settings(**creds), "imap") is None
+    assert "SMTP_HOST" in caplog.text
+    caplog.clear()
     with caplog.at_level(logging.WARNING):
         sender = cli.build_sender(Settings(**creds, smtp_host="smtp.x.com"), "imap")
     assert isinstance(sender, SmtpSender) and sender.address == "me@x.com" and sender.port == 465
     assert "AUTO_SEND is on" in caplog.text and "customer_complaint" in caplog.text
 
 
-def test_mock_run_with_auto_send_writes_sent_replies(env, tmp_path, capsys):
+def test_mock_run_sends_and_saves_drafts_by_default(env, tmp_path, capsys):
     env.setattr(cli, "build_llm", lambda settings: FakeLLM(oracle))
     env.setenv("MOCK_INBOX", str(cli.ROOT / "data" / "mock_inbox.json"))
-    env.setenv("AUTO_SEND", "true")
-    cli.main(["--source", "mock", "--limit", "50", "--save-drafts"])
+    cli.main(["--limit", "50"])
     sent = {p.stem for p in (tmp_path / "sent").glob("*.eml")}
-    assert sent and not sent & {p.stem for p in (tmp_path / "drafts").glob("*.eml")}
+    drafts = {p.stem for p in (tmp_path / "drafts").glob("*.eml")}
+    assert sent and drafts and not sent & drafts
     assert "Accuracy vs expected status: 23/23" in capsys.readouterr().out
+
+
+def test_sending_and_drafts_can_be_turned_off(env, tmp_path):
+    env.setattr(cli, "build_llm", lambda settings: FakeLLM(oracle))
+    env.setenv("MOCK_INBOX", str(cli.ROOT / "data" / "mock_inbox.json"))
+    env.setenv("AUTO_SEND", "false")
+    cli.main(["--limit", "50", "--no-save-drafts"])
+    assert not (tmp_path / "sent").exists() and not list((tmp_path / "drafts").glob("*.eml"))
+
+
+def test_source_is_mock_without_a_mailbox_and_imap_with_one(env):
+    runs = []
+    env.setattr(cli, "run_once", lambda settings, args: runs.append(args.source))
+    cli.main([])
+    env.setenv("IMAP_USERNAME", "me@x.com")
+    cli.main([])
+    cli.main(["--source", "mock"])
+    assert runs == ["mock", "imap", "mock"]
+
+
+def test_labels_are_on_by_default_except_where_the_profile_turns_them_off(env):
+    seen = []
+    env.setattr(cli, "run_once", lambda settings, args: seen.append(args.apply_labels))
+    cli.main([])
+    cli.main(["--no-apply-labels"])
+    cli.main(["--profile", "outlook"])
+    cli.main(["--profile", "outlook", "--apply-labels"])
+    assert seen == [True, False, False, True]
+
+
+def test_mail_profile_setting_picks_the_profile(env, tmp_path):
+    env.setenv("MAIL_PROFILE", "yahoo")
+    assert cli.load_settings(None).imap_host == "imap.mail.yahoo.com"
+    assert cli.load_settings("gmail").imap_host == "imap.gmail.com"  # --profile wins
+    env.delenv("MAIL_PROFILE")
+    env_file = tmp_path / "local.env"
+    env_file.write_text("MAIL_PROFILE=outlook\n")
+    env.setattr(cli, "ENV_FILE", str(env_file))
+    assert cli.load_settings(None).imap_auth == "xoauth2"
 
 
 def test_gmail_profile_has_smtp(env):

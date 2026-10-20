@@ -11,7 +11,7 @@ The agent uses up to four secrets: `GEMINI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD`
 |---|---|
 | Never in Git | `.env` and `secrets/*` are in `.gitignore`. Only `.env.example` (empty values) and `secrets/.gitkeep` are committed. |
 | Never in a Docker image | `.env` and `secrets/` are in `.dockerignore`. `config/*.env` profiles, which are built into the image, hold only server names and ports. |
-| Not in environment variables in Docker | Docker secrets: files mounted read-only at `/run/secrets/`. Environment variables would show up in `docker inspect`. The agent logs a warning (with the name, never the value) if a secret still comes from the environment. |
+| Not in environment variables in Docker | Secret files: `./secrets/` is mounted read-only at `/run/secrets/`. Environment variables would show up in `docker inspect`. The agent logs a warning (with the name, never the value) if a secret still comes from the environment. |
 | Never printed | Settings store secrets as Pydantic `SecretStr`, and the IMAP/SMTP login objects hide the secret from their `repr`. |
 | Never in telemetry | The Gemini key is sent in an HTTP header, not the URL, so it never appears in a trace. Error spans record only the error type. |
 | Can be rotated without a restart | In watch mode, settings are re-read every cycle, so a new password or token in the secret file is picked up on the next connect. |
@@ -28,9 +28,9 @@ The agent uses up to four secrets: `GEMINI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD`
 
 - The AI has only three tools: read the one email it was given, submit a triage, submit a reply.
   It cannot send, forward, open links or see other emails.
-- The mailbox is opened read-only unless `--apply-labels` is used, and emails stay unread.
-- Sending is off by default (`AUTO_SEND=false`). When it is on, only clean replies in allowed categories
-  are sent, with a limit per run.
+- The mailbox is opened read-only when labels are off (`--no-apply-labels`), and emails always stay unread.
+- Sending is on by default, but only clean replies (no guardrail flag) in allowed categories are sent,
+  with a limit per run. `AUTO_SEND=false` turns sending off.
 - The container runs as a non-root user on a read-only file system with all Linux capabilities dropped.
 
 ## Customer data

@@ -9,7 +9,8 @@ are ignored.
 
 Key points:
 
-- **Safe by default.** It never sends email unless you turn that on. Replies are saved as drafts.
+- **Careful sending.** Clean replies to complaints and KYC emails are sent automatically. Anything with
+  the slightest doubt is saved as a draft for a person. One setting (`AUTO_SEND=false`) turns sending off.
 - **Guardrails around the AI.** Every email is treated as untrusted. Prompt-injection attempts, spoofed
   senders and made-up facts in replies are caught by plain code checks, not by trusting the AI.
 - **Works with any mailbox.** Gmail, Outlook, Yahoo or any IMAP server. A built-in **mock inbox**
@@ -30,7 +31,7 @@ How secrets are handled: **[SECURITY.md](SECURITY.md)**.
 3. [Quick start: Docker](#3-quick-start-docker)
 4. [Where secrets go](#4-where-secrets-go)
 5. [Connect a real mailbox](#5-connect-a-real-mailbox)
-6. [Sending replies (optional)](#6-sending-replies-optional)
+6. [Sending replies](#6-sending-replies)
 7. [Run it all the time (deploy)](#7-run-it-all-the-time-deploy)
 8. [Dashboard (Grafana)](#8-dashboard-grafana)
 9. [Running the tests](#9-running-the-tests)
@@ -53,7 +54,7 @@ You need:
 
 > **Free Gemini keys have a small daily limit** (about 20 requests a day on `gemini-2.5-flash`).
 > The agent makes about **3 requests per email**, and many emails (attacks, auto-replies) need none.
-> For a first try, use `--limit 5`. If you hit the limit, see [Troubleshooting](#13-troubleshooting).
+> For a first try, use `--limit 5` (the default is 10). If you hit the limit, see [Troubleshooting](#13-troubleshooting).
 
 You do **not** need an API key to run the tests. They are fully offline.
 
@@ -98,11 +99,14 @@ cp .env.example .env             # Windows PowerShell: Copy-Item .env.example .e
 
 Open `.env` and set `GEMINI_API_KEY=your-key`. The `.env` file is in `.gitignore`, so it is never committed.
 
-**Step 4 - Run on the mock inbox**
+**Step 4 - Run**
 
 ```bash
-python -m email_agent.main --source mock --limit 5 --save-drafts
+python -m email_agent.main --limit 5
 ```
+
+With no mailbox in `.env` (`IMAP_USERNAME` empty), this uses the built-in **mock inbox**.
+To use your real mailbox, see [section 5](#5-connect-a-real-mailbox) - the command stays the same.
 
 At the end you will see a table like this:
 
@@ -115,7 +119,8 @@ m05      drafted       financial_disbursement    0.90
 Accuracy vs expected status: 5/5
 ```
 
-The reply drafts are in `output/drafts/*.eml` (open them with any mail app or text editor).
+In mock mode, replies are written to `output/sent/*.eml` (sent) and `output/drafts/*.eml` (drafts).
+Open them with any mail app or text editor.
 The full results are in `output/results.jsonl`.
 
 To run the same emails again, add `--fresh`. Without it, emails that were already handled are skipped.
@@ -126,48 +131,35 @@ To run the same emails again, add `--fresh`. Without it, emails that were alread
 
 Docker runs the agent **and** the dashboard (Grafana) with one command.
 
-**Step 1 - Create the secret files**
+**Step 1 - Put your Gemini key in a file**
 
-In Docker, secrets are **files** in the `secrets/` folder, not lines in `.env`
-([why?](#4-where-secrets-go)). Docker needs all four files to exist. Leave the ones you don't use empty.
-
-Linux / macOS:
+In Docker, secrets are **files** in the `secrets/` folder, not lines in `.env` ([why?](#4-where-secrets-go)).
 
 ```bash
-printf '%s' 'your-gemini-key' > secrets/gemini_api_key
-touch secrets/imap_password secrets/imap_oauth_token secrets/hf_token
-```
-
-Windows PowerShell:
-
-```powershell
-Set-Content -NoNewline -Path secrets\gemini_api_key -Value 'your-gemini-key'
-'imap_password', 'imap_oauth_token', 'hf_token' | ForEach-Object {
-    if (-not (Test-Path "secrets\$_")) { New-Item -ItemType File "secrets\$_" | Out-Null } }
+printf '%s' 'your-gemini-key' > secrets/gemini_api_key                       # Linux / macOS
+Set-Content -NoNewline -Path secrets\gemini_api_key -Value 'your-gemini-key'  # Windows PowerShell
 ```
 
 The `secrets/` folder is in `.gitignore` and `.dockerignore`, so these files never go to GitHub or into an image.
 
-**Step 2 - Optional settings**
+**Step 2 - Start**
 
 ```bash
-cp .env.example .env             # then remove GEMINI_API_KEY etc. from it - Docker uses secrets/ instead
+docker compose up -d
 ```
 
-This step is optional for the mock run. If a secret still arrives as an environment variable,
-the agent logs a warning.
-
-**Step 3 - Run**
-
-```bash
-docker compose run --rm tests                                            # offline tests
-docker compose up -d grafana otel-collector                              # dashboard
-docker compose run --rm email-agent --source mock --limit 5 --save-drafts
-```
+That's it. With no mailbox configured, the agent works on the mock inbox. It keeps running and checks
+again every 25 minutes (`WATCH_INTERVAL`). Watch it with `docker compose logs -f email-agent`.
 
 Open the dashboard at **http://localhost:3000** (login `admin` / `password`). See [section 8](#8-dashboard-grafana).
 
-To stop everything: `docker compose down`.
+Other useful commands:
+
+```bash
+docker compose run --rm email-agent --limit 5   # one run, then stop
+docker compose run --rm tests                   # offline tests
+docker compose down                             # stop everything
+```
 
 **Linux only:** the container runs as user ID 10001. Let it read the secrets and write the output:
 
@@ -183,7 +175,7 @@ chmod 400 secrets/* && sudo chown 10001 secrets/*
 | How you run it | Put secrets in | Why |
 |---|---|---|
 | Local Python | `.env` | Simple. `.env` is never committed. |
-| Docker | `secrets/<name>` files | Docker mounts them read-only at `/run/secrets/`. Environment variables can be read by anyone with `docker inspect`; secret files cannot. |
+| Docker | `secrets/<name>` files | The folder is mounted read-only at `/run/secrets/`. Create only the files you use. Environment variables can be read by anyone with `docker inspect`; secret files cannot. |
 
 The four secrets are `gemini_api_key`, `hf_token`, `imap_password` and `imap_oauth_token`.
 
@@ -201,65 +193,103 @@ More detail: [SECURITY.md](SECURITY.md).
 
 ## 5. Connect a real mailbox
 
-The agent connects to any IMAP server over TLS (port 993) and always checks the server's certificate.
-Each provider has a small settings file in `config/` (server names and ports only, no secrets):
+The agent works with any IMAP mailbox. You set three things: the **provider** (`MAIL_PROFILE`), your
+**address** (`IMAP_USERNAME`) and an **app password** (`IMAP_PASSWORD`). The server names and ports are
+already in `config/<provider>.env`.
 
-| Provider | Flag | What you need |
-|---|---|---|
-| Gmail / Google Workspace | `--profile gmail` | `IMAP_USERNAME` (your address) and an [App Password](https://myaccount.google.com/apppasswords) in `IMAP_PASSWORD`. Needs 2-Step Verification. |
-| Yahoo | `--profile yahoo` | `IMAP_USERNAME` and an app password in `IMAP_PASSWORD` |
-| Outlook / Microsoft 365 | `--profile outlook` | `IMAP_USERNAME` and an OAuth2 access token in `IMAP_OAUTH_TOKEN`. Microsoft no longer allows passwords. The agent does not fetch tokens itself; see `config/outlook.env`. |
-| Any other server | no profile | Set `IMAP_HOST` (and `IMAP_PORT`, `IMAP_AUTH` if needed) |
+### Gmail / Google Workspace
 
-Try it. The first command only reads and logs; nothing in the mailbox changes:
+1. **Turn on 2-Step Verification** for the account: [myaccount.google.com/security](https://myaccount.google.com/security).
+   Google only offers app passwords when it is on.
+2. **Create an App Password:** [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+   Give it any name (for example "email agent") and copy the 16-letter password. You see it only once.
+3. **Check that IMAP is on:** Gmail > Settings > See all settings > *Forwarding and POP/IMAP* > *Enable IMAP*.
+   (It is on by default for most accounts. Google Workspace admins can turn it off for the whole company.)
+4. **Add the login to `.env`:**
 
-```bash
-python -m email_agent.main --source imap --profile gmail --limit 5                 # read only
-python -m email_agent.main --source imap --profile gmail --limit 5 --save-drafts   # also create drafts
-```
+   ```bash
+   MAIL_PROFILE=gmail
+   IMAP_USERNAME=you@gmail.com
+   IMAP_PASSWORD=abcdefghijklmnop        # the App Password, without spaces
+   ```
 
-With Docker, use the same flags: `docker compose run --rm email-agent --source imap --profile gmail --limit 5`.
+   For Docker, keep `IMAP_PASSWORD` empty in `.env` and put the password in a file instead:
+   `printf '%s' 'abcdefghijklmnop' > secrets/imap_password`.
+5. **Run:** `python -m email_agent.main --limit 5` (or `docker compose up -d`).
 
-What it touches in your mailbox:
+### Yahoo Mail
+
+1. Yahoo > Account info > **Account security** > **Generate app password**. Copy it.
+2. In `.env`: `MAIL_PROFILE=yahoo`, `IMAP_USERNAME=you@yahoo.com`, `IMAP_PASSWORD=<app password>`
+   (Docker: the password goes in `secrets/imap_password`).
+3. Run as above.
+
+### Outlook.com / Microsoft 365
+
+Microsoft no longer accepts passwords for IMAP. You need an **OAuth2 access token** instead.
+
+1. Register an app in [Microsoft Entra](https://entra.microsoft.com) > App registrations, and give it the
+   delegated permissions `IMAP.AccessAsUser.All` and `SMTP.Send`.
+2. Get an access token for your account with these scopes (for example with the MSAL device-code flow).
+   The agent does not fetch tokens itself.
+3. In `.env`: `MAIL_PROFILE=outlook`, `IMAP_USERNAME=you@outlook.com`, `IMAP_OAUTH_TOKEN=<token>`
+   (Docker: the token goes in `secrets/imap_oauth_token`).
+4. Tokens last about an hour. The agent reads the token again before every check, so a script that refreshes
+   it can simply overwrite the file.
+
+Outlook does not support custom labels, so the outlook profile turns labels off.
+
+### Any other IMAP server
+
+Skip `MAIL_PROFILE` and set the servers yourself in `.env`: `IMAP_HOST`, `SMTP_HOST`, and `IMAP_PORT` /
+`SMTP_PORT` if they are not 993 / 465. Without `SMTP_HOST`, nothing is sent; replies are saved as drafts.
+
+### What it does in your mailbox
 
 - It reads only **unread** mail from the last `MAIL_DAYS` days (default 7), and leaves it unread.
-- With `--save-drafts`, it adds reply drafts to your Drafts folder.
-- With `--apply-labels`, it adds labels such as `Triage/customer_complaint` (Gmail labels, or IMAP keywords
-  on other servers; Outlook does not support this).
+- It adds labels such as `Triage/customer_complaint` (Gmail labels, or IMAP keywords on other servers).
+- It **sends** clean replies to complaints and KYC emails (see [section 6](#6-sending-replies)). You find
+  them in your Sent folder.
+- Every other reply goes to your **Drafts** folder for a person to check and send.
+
+To turn things off:
+
+| To stop... | Use |
+|---|---|
+| sending | `AUTO_SEND=false` in `.env` (replies become drafts) |
+| drafts | `--no-save-drafts` |
+| labels | `--no-apply-labels` (or `APPLY_LABELS=false` in `.env`) |
+
+For a first look without changing anything in the mailbox:
+`AUTO_SEND=false` in `.env`, then `python -m email_agent.main --limit 5 --no-save-drafts --no-apply-labels`.
 
 ---
 
-## 6. Sending replies (optional)
+## 6. Sending replies
 
-By default nothing is sent. A person opens each draft and clicks Send. To send some replies automatically,
-set this in `.env`:
+Sending is **on by default**, but only for safe cases. A reply is sent only if **all** of these are true:
 
-```bash
-AUTO_SEND=true
-AUTO_SEND_CATEGORIES=customer_complaint,kyc_document   # the default list
-MAX_SENDS_PER_RUN=5
-```
-
-A reply is sent only if **all** of these are true:
-
-- its category is in the list (phishing can never be added);
+- its category is in `AUTO_SEND_CATEGORIES` (default `customer_complaint,kyc_document`; phishing can never be added);
 - no guardrail raised any flag (any doubt keeps it a draft);
-- the per-run limit is not reached;
+- the per-run limit `MAX_SENDS_PER_RUN` (default 5) is not reached;
 - it was never sent before (`output/sent.jsonl` is the record).
 
-Replies always go to the original `From` address, never to `Reply-To`. In mock mode, "sent" replies are
-written to `output/sent/` instead.
+Everything else is saved as a draft. Replies always go to the original `From` address, never to `Reply-To`.
+In mock mode, "sent" replies are written to `output/sent/` instead.
+
+To never send, set `AUTO_SEND=false` in `.env`.
 
 ---
 
 ## 7. Run it all the time (deploy)
 
 ```bash
-MAIL_PROFILE=gmail docker compose up -d
+docker compose up -d
 ```
 
-This starts the agent and the dashboard. The agent waits for new mail (IMAP IDLE), so it reacts within
-seconds. It labels new emails and saves reply drafts. It sends only if `AUTO_SEND` is on.
+This starts the agent and the dashboard, using the mailbox from `.env` ([section 5](#5-connect-a-real-mailbox)).
+The agent waits for new mail (IMAP IDLE), so it reacts within seconds. It labels new emails, sends the
+clean replies and saves the rest as drafts.
 You can tune it in `.env` with `MAIL_LIMIT` (emails per run, default 20) and `WATCH_INTERVAL`
 (max seconds between checks, default 1500).
 
@@ -308,7 +338,8 @@ Everything is written to `output/` (in `.gitignore`, because it contains email d
 |---|---|
 | `results.jsonl` | One line per email: status, category, guardrail flags |
 | `review_queue.jsonl` | Emails a person should look at: `needs_review`, `quarantined`, `escalated` |
-| `drafts/*.eml` | Reply drafts (mock mode, with `--save-drafts`) |
+| `drafts/*.eml` | Reply drafts (mock mode) |
+| `sent/*.eml` | "Sent" replies (mock mode) |
 | `sent.jsonl` | Record of every automatically sent reply |
 | `state-*.json` | Which emails are already done, so nothing is handled twice |
 
@@ -332,11 +363,11 @@ What each status means:
 ```
 python -m email_agent.main [options]
 
---source mock|imap     where emails come from (default: mock)
---profile NAME         mailbox settings from config/NAME.env: gmail, outlook, yahoo
+--source mock|imap     where emails come from (default: imap if IMAP_USERNAME is set, otherwise mock)
+--profile NAME         mailbox settings from config/NAME.env: gmail, outlook, yahoo (default: MAIL_PROFILE)
 --limit N              max emails per run (default: 10)
---save-drafts          save replies as drafts
---apply-labels         add Triage/* labels to emails
+--no-save-drafts       do not save replies as drafts (default: saved)
+--no-apply-labels      do not add Triage/* labels (default: added, except Outlook)
 --watch                keep running and handle new mail as it arrives
 --interval SECONDS     max wait between checks with --watch (default: 300)
 --fresh                forget which emails were handled and start over
@@ -381,8 +412,9 @@ secrets/              your secret files for Docker (ignored by git)
 | `quota exhausted` or HTTP 429 | The free Gemini daily limit is used up. Wait until tomorrow, use a smaller `--limit`, try another `GEMINI_MODEL`, or switch to `LLM_PROVIDER=huggingface` with `HF_TOKEN`. Emails that were not handled are picked up on the next run. |
 | `Set GEMINI_API_KEY ...` | The key is missing: add it to `.env` (local) or `secrets/gemini_api_key` (Docker). |
 | HTTP 400 `API key not valid` | The key is wrong or has extra characters. Copy it again. |
-| Docker: an error that a secret file does not exist | All four files in `secrets/` must exist, even if empty. See [section 3](#3-quick-start-docker). |
+| `Set IMAP_HOST ...` | Add `MAIL_PROFILE=gmail` (or `outlook`, `yahoo`) to `.env`. |
 | Docker on Linux: `Permission denied` | Run the `chown 10001` commands at the end of [section 3](#3-quick-start-docker). |
-| IMAP login failed | Gmail/Yahoo need an **app password**, not your normal password. Check that IMAP is enabled in the mailbox settings. |
+| IMAP login failed | Gmail/Yahoo need an **app password**, not your normal password. Check that IMAP is enabled in the mailbox settings ([section 5](#5-connect-a-real-mailbox)). |
+| Replies are drafts, never sent | Check that `AUTO_SEND` is not `false` and the category is in `AUTO_SEND_CATEGORIES`. Any guardrail flag in the results table also keeps a reply as a draft. |
 | Nothing happens on a second run | Emails already handled are skipped. Use `--fresh` or `--only <id>`. |
 | `state file ... is corrupt` | Delete the named file in `output/`. |

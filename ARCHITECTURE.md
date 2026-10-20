@@ -3,10 +3,10 @@
 This document explains how the agent works inside. For setup, see [README.md](README.md).
 
 In one paragraph: the agent reads emails (from any IMAP mailbox or a mock inbox), puts each one into a
-fixed business category, and prepares a matching reply **draft**. An LLM (Gemini or a Hugging Face model)
+fixed business category, and prepares a matching reply. An LLM (Gemini or a Hugging Face model)
 does the reading and writing, but only through three narrow **tools**. Plain-code **guardrails** check
-everything before the LLM sees an email and again after it answers. By default nothing is sent; with
-`AUTO_SEND` on, only clean replies in allowed categories are sent (section 5).
+everything before the LLM sees an email and again after it answers. Only clean replies in allowed
+categories are sent (`AUTO_SEND`, on by default); everything else stays a draft (section 5).
 
 ---
 
@@ -15,7 +15,7 @@ everything before the LLM sees an email and again after it answers. By default n
 | | |
 |---|---|
 | **Input** | Any IMAP inbox over verified TLS (password, app password or OAuth2 token), or `data/mock_inbox.json` |
-| **Output** | `output/results.jsonl`, `output/review_queue.jsonl`, and optionally drafts and labels in the mailbox |
+| **Output** | `output/results.jsonl`, `output/review_queue.jsonl`, plus sent replies, drafts and labels in the mailbox |
 | **LLM** | Gemini (`generateContent` with function calling) or the Hugging Face router (OpenAI-style tools), over plain HTTP |
 | **Stack** | Python 3.12, Pydantic v2, `requests`, `imaplib`, OpenTelemetry, Docker Compose, Collector + Tempo + Loki + Prometheus + Grafana |
 | **Not in scope** | Sending anything the guardrails doubted, reading attachments (such as PDF statements), back-and-forth conversations with customers |
@@ -78,7 +78,7 @@ flowchart LR
 | `agent.py` | The pipeline, the tool loop, the LLM budget and tracing |
 | `state.py` | Remembers processed emails and retry counts (atomic JSON file) |
 | `actions.py` | What happens after the decision: logs, review queue, drafts, labels, sending |
-| `sender.py` | `SmtpSender` / `MockSender`. Used only by `actions.py`, only when `AUTO_SEND` is on |
+| `sender.py` | `SmtpSender` / `MockSender`. Used only by `actions.py`, only when `AUTO_SEND` is on (default) |
 | `telemetry.py` | OpenTelemetry setup: `none`, `console` or `otlp` |
 
 ### Mailbox: one IMAP client for every provider
@@ -90,7 +90,7 @@ flowchart LR
 |---|---|---|
 | Login | `LOGIN` with an App Password, or XOAUTH2 | `LOGIN` with a password or app password, or XOAUTH2 (Outlook / Microsoft 365) |
 | Thread id (to spot follow-ups) | `X-GM-THRID` | First id in `References`, else `In-Reply-To`, else the email's own `Message-ID` |
-| Labels (`--apply-labels`) | `X-GM-LABELS` | IMAP keyword (`+FLAGS`). Servers without custom keywords give a clear error |
+| Labels (on by default; `--no-apply-labels`) | `X-GM-LABELS` | IMAP keyword (`+FLAGS`). Servers without custom keywords give a clear error |
 | Drafts folder | Found by its `\Drafts` flag (any language) | `\Drafts` flag (RFC 6154), or `IMAP_DRAFTS_FOLDER` |
 | New-mail push | IDLE | IDLE if supported, otherwise polling every `--interval` |
 
@@ -248,7 +248,7 @@ flowchart LR
         O5[no commitments or unverified payment status, canary check]
     end
     subgraph OPS["5. Operations"]
-        P1[drafts by default; sending opt-in per category, clean replies only, capped]
+        P1[sending only per allowed category, clean replies only, capped; rest are drafts]
         P2[IMAP read-only + BODY.PEEK, verified TLS]
         P3[SecretStr, secrets as files; no bodies or secrets on spans]
         P4[dedupe, retries, review queue]
@@ -258,7 +258,7 @@ flowchart LR
 
 ### Automatic sending (`AUTO_SEND`)
 
-Off by default. When it is on, `Actions` sends a reply over SMTP (instead of only saving a draft) only if
+On by default (`AUTO_SEND=false` turns it off). `Actions` sends a reply over SMTP (instead of only saving a draft) only if
 every rule below holds:
 
 | Rule | Why |
@@ -323,7 +323,7 @@ gives the same ticket id and never creates a second draft. If a draft replying t
 (matched on `In-Reply-To` in the Drafts folder, or in `output/drafts`), it is left alone, because a person
 may have edited it. The result is flagged `draft_exists`. To get a new draft, delete the old one first.
 
-With `--apply-labels`, emails get the label `Triage/NeedsReview`, `Triage/Quarantine` or
+With labels on (the default), emails get the label `Triage/NeedsReview`, `Triage/Quarantine` or
 `Triage/<category>` (Gmail labels, or IMAP keywords on other servers).
 
 ---
@@ -409,8 +409,8 @@ Their `model_json_schema()` output is flattened into each provider's function de
 flowchart LR
     subgraph HOST["Docker host"]
         subgraph C1["email-agent container (non-root, read-only, no capabilities)"]
-            APP["python -m email_agent.main<br/>--source imap --profile gmail --watch"]
-            PROF["config/gmail.env<br/>(in image, no secrets)"]
+            APP["python -m email_agent.main --watch"]
+            PROF["config/&lt;MAIL_PROFILE&gt;.env<br/>(in image, no secrets)"]
         end
         subgraph OBS["observability (internal network)"]
             COL["otel-collector<br/>OTLP :4318"]
@@ -422,11 +422,11 @@ flowchart LR
             TEMPO & LOKI & PROM --> GRAF
         end
         VOL[("./output volume<br/>results, review queue,<br/>state, mock drafts")]
-        ENV[".env (not in image)<br/>non-secret overrides"]
-        SEC[("./secrets/*<br/>Docker secrets")]
+        ENV[".env (not in image)<br/>MAIL_PROFILE, IMAP_USERNAME, limits"]
+        SEC[("./secrets/*<br/>secret files")]
     end
     ENV -. env_file .-> APP
-    PROF -.->|"--profile"| APP
+    PROF -.->|"MAIL_PROFILE"| APP
     SEC -.->|"/run/secrets (read-only)"| APP
     APP --> VOL
     APP -- "IMAP TLS 993 (verified), IDLE" --> GM[("IMAP server")]
@@ -445,7 +445,8 @@ flowchart LR
 ### Security of the deployment
 
 - **Secrets are files, not environment variables.** `imap_password`, `imap_oauth_token`, `gemini_api_key`
-  and `hf_token` are Docker secrets (`./secrets/*`, mounted read-only at `/run/secrets/`). Environment
+  and `hf_token` are files in `./secrets/` (the folder is mounted read-only at `/run/secrets/`; create only
+  the ones you use). Environment
   variables would show up in `docker inspect` and `/proc/*/environ`. Settings read the files with
   pydantic-settings' `secrets_dir`. If a secret still arrives as an environment variable, a warning is
   logged (with the variable name, never the value).
@@ -522,7 +523,7 @@ agent.run                                   emails.processed=1
     ├── tool.read_email                     tool.ok=true
     ├── llm.chat ── tool.submit_triage
     ├── llm.chat ── tool.submit_reply
-    └── mailbox.save_draft                  (with --save-drafts)  draft.created=true|false
+    └── mailbox.save_draft                  (unless sent)         draft.created=true|false
 ```
 
 With `--watch` on IMAP, each cycle also has a `mailbox.wait` span (`mail.new=true|false`) before the next
@@ -540,7 +541,7 @@ Settings are read in this order, highest priority first:
 
 1. environment variables
 2. `.env`
-3. the provider profile `config/<name>.env` (`--profile`)
+3. the provider profile `config/<name>.env` (`--profile`, else `MAIL_PROFILE` from the environment or `.env`)
 4. secret files in `SECRETS_DIR` (default `/run/secrets`)
 
 All of them are listed with comments in [`.env.example`](.env.example).
@@ -551,14 +552,16 @@ All of them are listed with comments in [`.env.example`](.env.example).
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | - / `gemini-2.5-flash` | Gemini key and model |
 | `HF_TOKEN` / `HF_MODEL` | - / `Qwen/Qwen2.5-72B-Instruct` | Hugging Face token and a model that supports tool calling |
 | `IMAP_HOST` / `IMAP_PORT` | from profile / `993` | IMAP server (TLS only) |
-| `IMAP_USERNAME` | - | Login name, usually your email address |
+| `MAIL_PROFILE` | - | Provider profile: `gmail`, `outlook` or `yahoo` |
+| `IMAP_USERNAME` | - | Login name, usually your email address. If set, the mailbox is used instead of the mock inbox |
 | `IMAP_AUTH` | `password` | `password` (password or app password) or `xoauth2` (OAuth2 access token) |
 | `IMAP_PASSWORD` / `IMAP_OAUTH_TOKEN` | - | The secret for the chosen `IMAP_AUTH`; in Docker, a secret file |
 | `IMAP_INBOX` / `IMAP_DRAFTS_FOLDER` | `INBOX` / found by `\Drafts` flag | Folder names, if the server needs them |
 | `MAIL_ADDRESS` | `IMAP_USERNAME` | Our own address: draft `From`, and to skip our own mail |
 | `MAIL_DAYS` | `7` | Only unread mail from the last N days |
+| `APPLY_LABELS` | `true` | Add `Triage/*` labels (the outlook profile sets `false`); `--[no-]apply-labels` overrides |
 | `SECRETS_DIR` | `/run/secrets` | Folder with one file per secret, used if it exists. Read from the environment only |
-| `AUTO_SEND` | `false` | Send clean replies instead of only drafting them (see section 5) |
+| `AUTO_SEND` | `true` | Send clean replies in `AUTO_SEND_CATEGORIES`; `false` = only drafts (see section 5) |
 | `AUTO_SEND_CATEGORIES` | `customer_complaint,kyc_document` | Comma-separated categories that may be sent |
 | `MAX_SENDS_PER_RUN` | `5` | Most replies sent in one run |
 | `SMTP_HOST` / `SMTP_PORT` | from profile / `465` | SMTP server; 465 = TLS, other ports use STARTTLS. Same login as IMAP |

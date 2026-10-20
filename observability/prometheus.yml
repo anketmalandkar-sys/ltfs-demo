@@ -1,0 +1,11 @@
+# Prometheus: metric store. The agent's metrics arrive through the OTLP receiver
+# (--web.enable-otlp-receiver), so there is nothing to scrape.
+global:
+  evaluation_interval: 30s
+
+otlp:
+  promote_resource_attributes: [service.name]   # becomes the service_name label
+
+storage:
+  tsdb:
+    out_of_order_time_window: 30m

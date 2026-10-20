@@ -1,0 +1,37 @@
+# The agent sends traces, metrics and logs here over OTLP; the Collector forwards each signal to its store.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlp/tempo:            # traces
+    endpoint: tempo:4317
+    tls:
+      insecure: true     # internal Docker network only
+  otlphttp/loki:         # logs -> Loki's native OTLP endpoint (/otlp/v1/logs)
+    endpoint: http://loki:3100/otlp
+  otlphttp/prometheus:   # metrics -> Prometheus' OTLP receiver (/api/v1/otlp/v1/metrics)
+    endpoint: http://prometheus:9090/api/v1/otlp
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki]

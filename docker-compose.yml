@@ -1,0 +1,101 @@
+# Secrets are Docker secrets: files in ./secrets/, mounted read-only at /run/secrets/ and never put in
+# environment variables (those show up in `docker inspect`). Create all four files first; leave unused
+# ones empty. See README section 3, "Quick start: Docker".
+secrets:
+  imap_password:    { file: ./secrets/imap_password }
+  imap_oauth_token: { file: ./secrets/imap_oauth_token }
+  gemini_api_key:   { file: ./secrets/gemini_api_key }
+  hf_token:         { file: ./secrets/hf_token }
+
+services:
+  email-agent:
+    build: { context: ., target: runtime }
+    # Non-secret settings only: the provider profile, then optional overrides (IMAP_USERNAME, limits, ...)
+    env_file:
+      - path: config/${MAIL_PROFILE:-gmail}.env
+      - path: .env
+        required: false
+    environment:
+      OTEL_TRACES_EXPORTER: otlp                          # traces, metrics and logs
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Raw LLM prompts/replies (customer email text!) in Tempo and Loki. Set false in .env to stop.
+      OTEL_CAPTURE_CONTENT: ${OTEL_CAPTURE_CONTENT:-true}
+    secrets: [imap_password, imap_oauth_token, gemini_api_key, hf_token]
+    volumes:
+      - ./output:/app/output  # the only writable path
+    # Deployed mode: wakes on new mail (IMAP IDLE), labels it and drafts replies (sending: AUTO_SEND).
+    # Tune in .env: MAIL_PROFILE, MAIL_LIMIT (emails per run), WATCH_INTERVAL (max seconds between checks).
+    # One-off run instead: docker compose run --rm email-agent --source mock
+    command: ["--source", "imap", "--profile", "${MAIL_PROFILE:-gmail}", "--limit", "${MAIL_LIMIT:-20}",
+              "--save-drafts", "--apply-labels", "--watch", "--interval", "${WATCH_INTERVAL:-1500}"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [otel-collector]
+
+  # ---- Observability: agent -> Collector -> Tempo (traces) / Loki (logs) / Prometheus (metrics) -> Grafana
+  # Only Grafana is published (localhost:3000); everything else stays on the internal network.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    restart: unless-stopped
+    depends_on: [tempo, loki, prometheus]
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.2.1
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./observability/loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus",
+              "--storage.tsdb.retention.time=7d", "--web.enable-otlp-receiver"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      # Local demo login admin/password (Grafana is only published on 127.0.0.1). Override in .env.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-password}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/email-agent.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"   # Grafana, this machine only (login: admin / password)
+    restart: unless-stopped
+    depends_on: [tempo, loki, prometheus]
+
+  tests:
+    build: { context: ., target: test }
+    profiles: ["test"]
+
+volumes:
+  tempo-data:
+  loki-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,22 @@
+[project]
+name = "email-agent"
+version = "0.1.0"
+description = "Email triage agent: classifies emails and drafts replies with an LLM, behind guardrails."
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["live: hits a real LLM API (needs API key)"]
+addopts = "-m 'not live'"
+filterwarnings = ["ignore:Type google._upb._message:DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["output"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, import order, common bugs, modern syntax
+select = ["E", "F", "I", "B", "UP"]

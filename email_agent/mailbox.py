@@ -1,5 +1,5 @@
 """Where emails come from and where drafts go. Mock (JSON file) and any IMAP server share one interface:
-connect(), fetch_new(limit), save_draft(email, draft), apply_label(email, label), close().
+connect(), fetch_new(limit, skip), save_draft(email, draft), apply_label(email, label), close().
 ImapWatcher waits for new mail (IMAP IDLE), so --watch reacts within seconds instead of polling.
 Nothing here can send an email."""
 
@@ -93,8 +93,8 @@ class MockMailbox:
         self.emails = [Email(**item) for item in items]
         self.expected = {item["id"]: item for item in items}
 
-    def fetch_new(self, limit: int) -> list[Email]:
-        return self.emails[:limit]
+    def fetch_new(self, limit: int, skip: Callable[[Email], bool] | None = None) -> list[Email]:
+        return [email for email in self.emails if not (skip and skip(email))][:limit]
 
     def save_draft(self, email: Email, draft: ReplyDraft) -> bool:
         """Returns False if a draft for this email already exists (it is left untouched)."""
@@ -160,11 +160,18 @@ class ImapMailbox:
     def _select_inbox(self) -> None:
         self.conn.select(self.account.inbox, readonly=not self.apply_labels)
 
-    def fetch_new(self, limit: int) -> list[Email]:
+    def fetch_new(self, limit: int, skip: Callable[[Email], bool] | None = None) -> list[Email]:
+        """Newest first. Skipped emails (already handled, but still unread) don't count toward the limit."""
         since = (date.today() - timedelta(days=self.days)).strftime("%d-%b-%Y")
         _, data = self.conn.uid("SEARCH", None, "UNSEEN", "SINCE", since)
-        uids = [uid.decode() for uid in data[0].split()][-limit:][::-1]  # newest first
-        return [self._fetch(uid) for uid in uids]
+        emails = []
+        for uid in reversed(data[0].split()):
+            if len(emails) == limit:
+                break
+            email = self._fetch(uid.decode())
+            if not (skip and skip(email)):
+                emails.append(email)
+        return emails
 
     def _fetch(self, uid: str) -> Email:
         items = "(X-GM-THRID BODY.PEEK[])" if self.gmail else "(BODY.PEEK[])"

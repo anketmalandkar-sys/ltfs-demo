@@ -120,7 +120,8 @@ class Agent:
         with tracer.start_as_current_span("agent.run") as span:
             with tracer.start_as_current_span("mailbox.fetch_new"):
                 self.mailbox.connect()
-                emails = self.mailbox.fetch_new(min(limit, self.settings.max_emails))
+                skip = None if only else self.state.is_done  # --only reruns done emails on purpose
+                emails = self.mailbox.fetch_new(min(limit, self.settings.max_emails), skip=skip)
             if only:
                 emails = [email for email in emails if email.id in only]
                 self.not_found = sorted(only - {email.id for email in emails})

@@ -275,6 +275,12 @@ def test_gmail_fetch_new_uses_peek_newest_first_and_gmail_thread_id():
     assert all("BODY.PEEK[]" in c[3] for c in fetches)
 
 
+def test_fetch_new_limit_counts_only_emails_not_skipped():
+    box = mailbox()
+    emails = box.fetch_new(limit=2, skip=lambda email: email.id == "7")
+    assert [e.id for e in emails] == ["6", "5"]
+
+
 def test_generic_server_fetches_without_gmail_extension_and_threads_by_references(monkeypatch):
     monkeypatch.setattr(FakeIMAP, "caps", GENERIC_CAPS)
     box = mailbox()

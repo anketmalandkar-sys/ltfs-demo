@@ -153,6 +153,15 @@ def test_second_run_skips_processed_emails(tmp_path):
     assert llm2.calls == []
 
 
+def test_limit_counts_only_unprocessed_emails(tmp_path):
+    # Done emails stay unread, so they must not use up the limit and starve the rest
+    agent, _ = make_agent(tmp_path)
+    first = [r.email_id for r in agent.run(limit=3).results]
+    agent2, _ = make_agent(tmp_path)
+    second = [r.email_id for r in agent2.run(limit=3).results]
+    assert len(second) == 3 and not set(first) & set(second)
+
+
 # ------------------------------------------------------ misbehaving LLMs ----
 
 

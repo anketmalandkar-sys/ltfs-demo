@@ -51,7 +51,7 @@ still quarantined.
 ```mermaid
 flowchart LR
     CLI["main.py<br/>CLI and watch loop"] --> AG["agent.py<br/>per-email pipeline"]
-    CFG["config.py<br/>Settings: env, profile,<br/>secret files"] --> CLI
+    CFG["config.py<br/>Settings: env, profile,<br/>keystore"] --> CLI
     AG --> MB["mailbox.py<br/>MockMailbox / ImapMailbox<br/>ImapWatcher (IDLE)"]
     AG --> GR["guardrails.py<br/>sanitize, inspect, check_result"]
     AG --> TL["tools.py<br/>ToolSession: 3 tools"]
@@ -69,7 +69,8 @@ flowchart LR
 | Module | What it does |
 |---|---|
 | `models.py` | Pydantic models and enums: `Email`, `Triage`, `ReplyDraft`, `EmailResult`, `RunReport` |
-| `config.py` | `Settings` (pydantic-settings). Secrets are `SecretStr` and can come from files (Docker secrets) |
+| `config.py` | `Settings` (pydantic-settings). Secrets are `SecretStr` |
+| `keystore.py` | Encrypted keystore (Fernet + scrypt): `build` makes it while the Docker image is built; `list` shows the names |
 | `categories.py` | One dict: category -> (description, reply guidance) |
 | `mailbox.py` | `connect / fetch_new / save_draft / apply_label / close`. There is no send method. `ImapWatcher` waits for new mail |
 | `guardrails.py` | All plain-code safety checks |
@@ -422,10 +423,10 @@ flowchart LR
             TEMPO & LOKI & PROM --> GRAF
         end
         VOL[("./output volume<br/>results, review queue,<br/>state, mock drafts")]
-        ENV[".env (not in image)<br/>MAIL_PROFILE, IMAP_USERNAME, limits"]
-        SEC[("./secrets/*<br/>secret files")]
+        ENV[".env (real values)<br/>build secret only"]
+        SEC[("keystore_password<br/>Docker secret")]
     end
-    ENV -. env_file .-> APP
+    ENV -. "build: keystore.enc + .env with references" .-> APP
     PROF -.->|"MAIL_PROFILE"| APP
     SEC -.->|"/run/secrets (read-only)"| APP
     APP --> VOL
@@ -437,21 +438,22 @@ flowchart LR
 
 - The `Dockerfile` has three stages: `base`, `test` (runs pytest) and `runtime` (the default; runs as a
   non-root user).
-- `.dockerignore` leaves out `.env`, `secrets/`, `output/` and `.venv/`, so no secret ends up in an image.
+- `.dockerignore` leaves out `.env`, `output/` and `.venv/`, so no secret ends up in an image.
 - `restart: unless-stopped` together with `--watch` keeps the agent running. It wakes on new mail and does a
   full check at least every 25 minutes (`--interval 1500`). Wrong IMAP credentials stop the container with a
   clear message instead of retrying forever.
 
 ### Security of the deployment
 
-- **Secrets are files, not environment variables.** `imap_password`, `imap_oauth_token`, `gemini_api_key`
-  and `hf_token` are files in `./secrets/` (the folder is mounted read-only at `/run/secrets/`; create only
-  the ones you use). Environment
-  variables would show up in `docker inspect` and `/proc/*/environ`. Settings read the files with
-  pydantic-settings' `secrets_dir`. If a secret still arrives as an environment variable, a warning is
-  logged (with the variable name, never the value).
-- **Change a secret without a restart.** Settings are reloaded every watch cycle, so a refreshed OAuth token
-  or a new password in the secret file is used on the next connect.
+- **Secrets are in an encrypted keystore, not environment variables.** `GEMINI_API_KEY`, `HF_TOKEN`,
+  `IMAP_PASSWORD` and `IMAP_OAUTH_TOKEN` are put into an encrypted keystore while the image is built
+  (`.env` and the password are build secrets, never stored in a layer). The password is a Docker secret at
+  runtime, from `keystore_password` (set by the user, never committed). Environment variables would show up in
+  `docker inspect` and `/proc/*/environ`. The image's `.env` holds only references (`HF_TOKEN=keystore:HF_TOKEN`), and
+  `main.resolve_references` replaces them with the keystore values at startup. If a secret still arrives as an environment variable, a warning is logged (with the
+  variable name, never the value).
+- **Change a secret:** edit `.env` and run `./start.sh`. The image is rebuilt (the `CONFIG_HASH` build argument
+  changes with `.env`) and the agent restarts with the new keystore.
 - **Hardened container:** non-root UID 10001, `read_only: true` with `tmpfs: /tmp`, `cap_drop: [ALL]` and
   `no-new-privileges`. `./output` is the only writable path.
 - **Verified TLS** to the IMAP server (see section 2). Only Grafana is published, on `127.0.0.1:3000`. Its
@@ -542,7 +544,8 @@ Settings are read in this order, highest priority first:
 1. environment variables
 2. `.env`
 3. the provider profile `config/<name>.env` (`--profile`, else `MAIL_PROFILE` from the environment or `.env`)
-4. secret files in `SECRETS_DIR` (default `/run/secrets`)
+
+A secret written as `keystore:NAME` is then replaced by the value `NAME` from the keystore.
 
 All of them are listed with comments in [`.env.example`](.env.example).
 
@@ -555,12 +558,12 @@ All of them are listed with comments in [`.env.example`](.env.example).
 | `MAIL_PROFILE` | - | Provider profile: `gmail`, `outlook` or `yahoo` |
 | `IMAP_USERNAME` | - | Login name, usually your email address. If set, the mailbox is used instead of the mock inbox |
 | `IMAP_AUTH` | `password` | `password` (password or app password) or `xoauth2` (OAuth2 access token) |
-| `IMAP_PASSWORD` / `IMAP_OAUTH_TOKEN` | - | The secret for the chosen `IMAP_AUTH`; in Docker, a secret file |
+| `IMAP_PASSWORD` / `IMAP_OAUTH_TOKEN` | - | The secret for the chosen `IMAP_AUTH`; usually a `keystore:` reference |
 | `IMAP_INBOX` / `IMAP_DRAFTS_FOLDER` | `INBOX` / found by `\Drafts` flag | Folder names, if the server needs them |
 | `MAIL_ADDRESS` | `IMAP_USERNAME` | Our own address: draft `From`, and to skip our own mail |
 | `MAIL_DAYS` | `7` | Only unread mail from the last N days |
 | `APPLY_LABELS` | `true` | Add `Triage/*` labels (the outlook profile sets `false`); `--[no-]apply-labels` overrides |
-| `SECRETS_DIR` | `/run/secrets` | Folder with one file per secret, used if it exists. Read from the environment only |
+| `KEYSTORE_PATH` / `KEYSTORE_PASSWORD_FILE` | `keystore.enc` / `keystore_password` | Encrypted keystore and its password file. The Docker image sets them (`/app/keystore.enc`, `/run/secrets/keystore_password`); normally you never set them. Opened only if a setting is a `keystore:` reference. Without a password file, a run at a terminal asks for it. Read from the environment only |
 | `AUTO_SEND` | `true` | Send clean replies in `AUTO_SEND_CATEGORIES`; `false` = only drafts (see section 5) |
 | `AUTO_SEND_CATEGORIES` | `customer_complaint,kyc_document` | Comma-separated categories that may be sent |
 | `MAX_SENDS_PER_RUN` | `5` | Most replies sent in one run |

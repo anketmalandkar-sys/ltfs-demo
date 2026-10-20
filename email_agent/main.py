@@ -15,7 +15,9 @@ import time
 from pathlib import Path
 
 from dotenv import dotenv_values
+from pydantic import SecretStr
 
+from . import keystore
 from .actions import Actions
 from .agent import Agent
 from .config import Settings
@@ -28,10 +30,9 @@ from .telemetry import event, mail_wakeups, prime_metrics, run_duration, setup_t
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ".env"
-SECRETS_DIR = os.environ.get("SECRETS_DIR", "/run/secrets")  # Docker secrets: one file per secret
-SECRET_FIELDS = ("imap_password", "imap_oauth_token", "gemini_api_key", "hf_token")
 MOCK_ADDRESS = "triage@ltfs-demo.local"
 log = logging.getLogger("email_agent")
+unlocked: dict[str, dict[str, str]] = {}  # keystore path -> values; the keystore in the image never changes
 
 
 def profile_name(profile: str | None) -> str | None:
@@ -46,7 +47,7 @@ def profile_name(profile: str | None) -> str | None:
 
 
 def load_settings(profile: str | None) -> Settings:
-    """Environment > .env > config/<profile>.env > files in SECRETS_DIR."""
+    """Environment > .env > config/<profile>.env. Secrets written as keystore:NAME come from the keystore."""
     env_files = []
     if profile := profile_name(profile):
         path = ROOT / "config" / f"{profile}.env"
@@ -55,12 +56,28 @@ def load_settings(profile: str | None) -> Settings:
         env_files.append(path)
     if ENV_FILE:
         env_files.append(ENV_FILE)
-    secrets_dir = Path(SECRETS_DIR)
-    if secrets_dir.is_dir():
-        for name in SECRET_FIELDS:
-            if os.environ.get(name.upper()):
-                log.warning("%s came from the environment; put it in %s instead", name.upper(), secrets_dir)
-    return Settings(_env_file=tuple(env_files) or None, _secrets_dir=secrets_dir if secrets_dir.is_dir() else None)
+    return resolve_references(Settings(_env_file=tuple(env_files) or None))
+
+
+def resolve_references(settings: Settings) -> Settings:
+    """Replace each secret written as keystore:NAME with its value from the keystore (in the Docker image the
+    .env has these references). The keystore is only opened when there is at least one reference."""
+    references = {}
+    for name in keystore.NAMES:
+        secret = getattr(settings, name.lower())
+        value = secret.get_secret_value() if secret else ""
+        if keystore.is_reference(value):
+            references[name] = value.removeprefix(keystore.PREFIX)
+    if not references:
+        return settings
+    path = keystore.keystore_path()
+    if str(path) not in unlocked:  # once per process, so editing keystore_password never breaks a running agent
+        unlocked[str(path)] = keystore.load(path, keystore.unlock(keystore.password_path()))
+    values = unlocked[str(path)]
+    for name, entry in references.items():
+        if entry not in values:
+            raise SystemExit(f"{name} points to {keystore.PREFIX}{entry}, which is not in the keystore")
+    return settings.model_copy(update={name.lower(): SecretStr(values[entry]) for name, entry in references.items()})
 
 
 def build_llm(settings: Settings):
@@ -94,7 +111,7 @@ def mail_login(settings: Settings, host_name: str, host: str) -> str:
     if missing:
         raise SystemExit(
             f"Set {', '.join(missing)} for the mailbox (MAIL_PROFILE=gmail|outlook|yahoo sets the servers; "
-            f"secrets can also be files in {SECRETS_DIR})"
+            f"secrets can be keystore references)"
         )
     return secret.get_secret_value()
 

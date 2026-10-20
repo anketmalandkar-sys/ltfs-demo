@@ -9,12 +9,22 @@ The agent uses up to four secrets: `GEMINI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD`
 
 | Rule | How |
 |---|---|
-| Never in Git | `.env` and `secrets/*` are in `.gitignore`. Only `.env.example` (empty values) and `secrets/.gitkeep` are committed. |
-| Never in a Docker image | `.env` and `secrets/` are in `.dockerignore`. `config/*.env` profiles, which are built into the image, hold only server names and ports. |
-| Not in environment variables in Docker | Secret files: `./secrets/` is mounted read-only at `/run/secrets/`. Environment variables would show up in `docker inspect`. The agent logs a warning (with the name, never the value) if a secret still comes from the environment. |
+| Never in Git | `.env` is in `.gitignore`. Only `.env.example` (empty values) is committed. The keystore is built into the Docker image, never stored in the project. |
+| No plain secret in the Docker image | `.env` is in `.dockerignore`. It reaches the build only as a build secret (never stored in a layer); the image gets an encrypted keystore and a `.env` with references. `config/*.env` profiles, which are built into the image, hold only server names and ports. |
+| Only references in the image | The image's `.env` has secrets only as references (`HF_TOKEN=keystore:HF_TOKEN`). The values are in the encrypted keystore and are looked up at runtime (`main.resolve_references`). |
+| Not in environment variables in Docker | The keystore password is a Docker secret (`/run/secrets/keystore_password`), not part of the image. Nothing secret is in the container environment. Environment variables would show up in `docker inspect`. The agent logs a warning (with the name, never the value) if a secret still comes from the environment. |
 | Never printed | Settings store secrets as Pydantic `SecretStr`, and the IMAP/SMTP login objects hide the secret from their `repr`. |
 | Never in telemetry | The Gemini key is sent in an HTTP header, not the URL, so it never appears in a trace. Error spans record only the error type. |
-| Can be rotated without a restart | In watch mode, settings are re-read every cycle, so a new password or token in the secret file is picked up on the next connect. |
+| Easy to rotate | Change the value in `.env` and run `./start.sh`: the image is rebuilt with the new keystore. |
+| Encrypted at rest | The keystore is encrypted with AES (Fernet: AES-128-CBC + HMAC-SHA256). The key comes from the password via scrypt, with a new random salt on every save. `keystore list` shows only names. |
+
+### What the keystore does and does not protect
+
+The keystore keeps the secrets encrypted, so a copy of the image (for example in a registry) is useless
+without the password. The password is in `keystore_password`, which you set and which is never committed or
+copied into the image. It is still a file on this machine: anyone who can read it and the image can open the
+keystore. On a real server, provide it from the platform's secret store (Docker Swarm or Kubernetes secrets, or
+a vault). Do not push images built from a real `.env` to a public registry.
 
 ## Network
 
@@ -46,8 +56,8 @@ The agent uses up to four secrets: `GEMINI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD`
 Check that no secret is about to be committed:
 
 ```bash
-git status --ignored          # .env, secrets/* and output/ should be listed as ignored
-git ls-files secrets          # should show only secrets/.gitkeep
+git status --ignored          # .env and output/ should be listed as ignored
+git ls-files | grep -i env    # should show only .env.example and config/*.env
 ```
 
 If a secret was ever committed or shared, **revoke it and create a new one** (for example at

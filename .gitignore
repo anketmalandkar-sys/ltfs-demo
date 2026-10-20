@@ -1,9 +1,8 @@
-# Secrets - never commit these. Only the empty placeholder is tracked.
+# Secrets - never commit these.
 .env
 .env.*
 !.env.example
-secrets/*
-!secrets/.gitkeep
+keystore_password
 
 # Agent output (contains email data)
 output/

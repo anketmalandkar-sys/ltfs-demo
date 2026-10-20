@@ -27,12 +27,14 @@ def env(monkeypatch, tmp_path):
         "SMTP_PORT",
         "MAIL_PROFILE",
         "APPLY_LABELS",
+        "KEYSTORE_PATH",
+        "KEYSTORE_PASSWORD_FILE",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
     monkeypatch.chdir(tmp_path.parent)  # no stray .env file
     monkeypatch.setattr(cli, "ENV_FILE", None)
-    monkeypatch.setattr(cli, "SECRETS_DIR", str(tmp_path / "no-secrets"))
+    monkeypatch.setattr(cli, "unlocked", {})
     return monkeypatch
 
 
@@ -131,24 +133,74 @@ def test_profile_supplies_provider_settings(env):
         cli.load_settings("nope")
 
 
-def test_secrets_are_read_from_files(env, tmp_path):
-    secrets = tmp_path / "secrets"
-    secrets.mkdir()
-    (secrets / "imap_password").write_text("app-pass\n")  # trailing newline, as `echo` writes it
-    (secrets / "hf_token").write_text("")  # an empty file means "not used"
-    env.setattr(cli, "SECRETS_DIR", str(secrets))
+def use_keystore(env, tmp_path, values):
+    from email_agent import keystore
+
+    store, password = tmp_path / "keystore.enc", tmp_path / "keystore_password"
+    password.write_text("pw\n")
+    keystore.save(store, "pw", values)
+    env.setenv("KEYSTORE_PATH", str(store))
+    env.setenv("KEYSTORE_PASSWORD_FILE", str(password))
+    return store, password
+
+
+def test_keystore_references_are_resolved(env, tmp_path):
+    use_keystore(env, tmp_path, {"IMAP_PASSWORD": "app-pass", "GEMINI_API_KEY": "gem"})
+    env.setenv("IMAP_PASSWORD", "keystore:IMAP_PASSWORD")
+    env.setenv("GEMINI_API_KEY", "keystore:GEMINI_API_KEY")
     settings = cli.load_settings(None)
     assert settings.imap_password.get_secret_value() == "app-pass"
+    assert settings.gemini_api_key.get_secret_value() == "gem"
     assert not settings.hf_token
+    assert "app-pass" not in repr(settings)
 
 
-def test_secret_in_environment_is_warned_about_when_secret_files_are_used(env, tmp_path, caplog):
-    (tmp_path / "secrets").mkdir()
-    env.setattr(cli, "SECRETS_DIR", str(tmp_path / "secrets"))
-    env.setenv("IMAP_PASSWORD", "leaky")
-    with caplog.at_level(logging.WARNING):
+def test_reference_to_a_missing_entry_is_a_clear_error(env, tmp_path):
+    use_keystore(env, tmp_path, {"GEMINI_API_KEY": "gem"})
+    env.setenv("HF_TOKEN", "keystore:HF_TOKEN")
+    with pytest.raises(SystemExit, match="HF_TOKEN points to keystore:HF_TOKEN") as exc:
         cli.load_settings(None)
-    assert "IMAP_PASSWORD" in caplog.text and "leaky" not in caplog.text
+    assert "gem" not in str(exc.value)
+
+
+def test_without_references_the_keystore_is_not_opened(env, tmp_path):
+    store, password = use_keystore(env, tmp_path, {})
+    password.unlink()  # would fail if the keystore were opened
+    env.setenv("GEMINI_API_KEY", "plain")
+    assert cli.load_settings(None).gemini_api_key.get_secret_value() == "plain"
+
+
+def test_missing_password_file_asks_on_a_terminal_and_fails_otherwise(env, tmp_path):
+    from email_agent import keystore
+
+    _, password = use_keystore(env, tmp_path, {"HF_TOKEN": "hf"})
+    password.unlink()
+    env.setenv("HF_TOKEN", "keystore:HF_TOKEN")
+    env.setattr(keystore, "interactive", lambda: True)
+    env.setattr(keystore, "getpass", lambda text: "pw")
+    assert cli.load_settings(None).hf_token.get_secret_value() == "hf"
+    cli.unlocked.clear()
+    env.setattr(keystore, "interactive", lambda: False)
+    with pytest.raises(SystemExit, match="keystore password file"):
+        cli.load_settings(None)
+
+
+def test_changing_the_password_does_not_break_a_running_agent(env, tmp_path):
+    """The keystore in the image never changes, so it is unlocked once; a new password only matters after
+    ./start.sh rebuilt the image."""
+    _, password = use_keystore(env, tmp_path, {"GEMINI_API_KEY": "gem"})
+    env.setenv("GEMINI_API_KEY", "keystore:GEMINI_API_KEY")
+    assert cli.load_settings(None).gemini_api_key.get_secret_value() == "gem"
+    password.write_text("a-new-password")  # edited while the agent runs
+    assert cli.load_settings(None).gemini_api_key.get_secret_value() == "gem"
+
+
+def test_wrong_password_at_startup_says_to_run_start(env, tmp_path):
+    _, password = use_keystore(env, tmp_path, {"GEMINI_API_KEY": "gem"})
+    password.write_text("a-new-password")
+    env.setenv("GEMINI_API_KEY", "keystore:GEMINI_API_KEY")
+    with pytest.raises(SystemExit, match="start.sh"):
+        cli.load_settings(None)
 
 
 class FakeWatcher:
@@ -329,3 +381,11 @@ def test_run_summary_has_tokens_and_cost(env, caplog):
         cli.main(["--source", "mock", "--limit", "2"])
     summary = next(r for r in caplog.records if getattr(r, "event", None) == "run.finished").__dict__
     assert {"run.input_tokens", "run.output_tokens", "run.cost_usd"} <= set(summary)
+
+
+def test_env_example_has_no_inline_comments():
+    """Docker reads `KEY=  # text` as the value "# text", unlike python-dotenv, so comments get their own line."""
+    import re
+
+    lines = (cli.ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert not [line for line in lines if re.match(r"^#?\s*[A-Z_]+=.*\s#", line)]

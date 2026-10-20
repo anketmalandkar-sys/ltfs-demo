@@ -131,25 +131,32 @@ To run the same emails again, add `--fresh`. Without it, emails that were alread
 
 Docker runs the agent **and** the dashboard (Grafana) with one command.
 
-**Step 1 - Put your Gemini key in a file**
-
-In Docker, secrets are **files** in the `secrets/` folder, not lines in `.env` ([why?](#4-where-secrets-go)).
+**Step 1 - Put your Gemini key in `.env`**
 
 ```bash
-printf '%s' 'your-gemini-key' > secrets/gemini_api_key                       # Linux / macOS
-Set-Content -NoNewline -Path secrets\gemini_api_key -Value 'your-gemini-key'  # Windows PowerShell
+cp .env.example .env             # Windows PowerShell: Copy-Item .env.example .env
 ```
 
-The `secrets/` folder is in `.gitignore` and `.dockerignore`, so these files never go to GitHub or into an image.
+Open `.env` and set `GEMINI_API_KEY=your-key` (and the mailbox settings, if you want a real mailbox).
 
-**Step 2 - Start**
+**Step 2 - Choose a keystore password**
+
+Run `./start.sh` (Windows PowerShell: `.\start.ps1`) once. It creates the file `keystore_password` with the
+placeholder `CHANGE_ME` and stops. Open the file, replace `CHANGE_ME` with your own password (at least 8
+characters) and save it. The file is in `.gitignore`, so it is never committed.
+
+**Step 3 - Start**
 
 ```bash
-docker compose up -d
+./start.sh                       # Windows PowerShell: .\start.ps1
 ```
 
-That's it. With no mailbox configured, the agent works on the mock inbox. It keeps running and checks
-again every 25 minutes (`WATCH_INTERVAL`). Watch it with `docker compose logs -f email-agent`.
+It builds the image and starts the agent and the dashboard. While building, it puts the secrets from your
+`.env` into an encrypted keystore **inside the image**; the image's copy of `.env` has only references
+(`GEMINI_API_KEY=keystore:GEMINI_API_KEY`). Your own `.env` is not changed. See [section 4](#4-where-secrets-go).
+
+With no mailbox configured, the agent works on the mock inbox. It keeps running and checks again every
+25 minutes (`WATCH_INTERVAL`). Watch it with `docker compose logs -f email-agent`.
 
 Open the dashboard at **http://localhost:3000** (login `admin` / `password`). See [section 8](#8-dashboard-grafana).
 
@@ -161,31 +168,45 @@ docker compose run --rm tests                   # offline tests
 docker compose down                             # stop everything
 ```
 
-**Linux only:** the container runs as user ID 10001. Let it read the secrets and write the output:
+Changed `.env`? Run the start script again: it rebuilds the image with the new values and restarts the agent.
 
-```bash
-mkdir -p output && sudo chown 10001 output
-chmod 400 secrets/* && sudo chown 10001 secrets/*
-```
+**Linux only:** the container runs as user ID 10001. Let it write the output folder: `sudo chown 10001 output`.
 
 ---
 
 ## 4. Where secrets go
 
-| How you run it | Put secrets in | Why |
-|---|---|---|
-| Local Python | `.env` | Simple. `.env` is never committed. |
-| Docker | `secrets/<name>` files | The folder is mounted read-only at `/run/secrets/`. Create only the files you use. Environment variables can be read by anyone with `docker inspect`; secret files cannot. |
+**Your `.env` keeps every setting with the real values.** Local Python runs read it as it is.
 
-The four secrets are `gemini_api_key`, `hf_token`, `imap_password` and `imap_oauth_token`.
+**The Docker image gets an encrypted keystore instead.** While the image is built, the four secrets
+(`GEMINI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD`, `IMAP_OAUTH_TOKEN`) are moved into `/app/keystore.enc`
+(AES via Fernet, key from the password via scrypt). The image's copy of `.env` has only references, like
+`HF_TOKEN=keystore:HF_TOKEN`, and the agent looks them up when it starts.
+
+| What | Where |
+|---|---|
+| Real values | Your `.env` (in `.gitignore`, never committed, never copied into the image) |
+| Encrypted keystore + `.env` with references | Inside the Docker image (`/app/keystore.enc`, `/app/.env`) |
+| Keystore password | `keystore_password` in the project folder, set by you (in `.gitignore`, never committed or copied into the image) |
+
+How it stays safe in Docker:
+
+- `.env` and the password reach the build as **build secrets**, which are never stored in an image layer.
+  The image holds no plain secret, and `docker history` shows none.
+- At runtime the password is a **Docker secret**, mounted at `/run/secrets/keystore_password`. It is not
+  in the image, and `docker inspect` shows only the references.
+- `./start.sh` rebuilds only when `.env` or the password changed.
+- **Changing the password is safe.** The running agent unlocked its keystore at startup and keeps working.
+  Run `./start.sh` after the change: it builds a new image with the new password, then replaces the agent.
+
+To see what is in the image's keystore (names only):
+`docker compose run --rm --entrypoint python email-agent -m email_agent.keystore list`.
 
 Other safety rules in the code:
 
 - Secrets are stored as Pydantic `SecretStr`, so they print as `**********` in logs and errors.
 - They are never written to traces, logs or output files.
 - `config/*.env` (the provider profiles) hold **no** secrets. They are built into the Docker image.
-- Locally, you can also use the `secrets/` files instead of `.env`. Set `SECRETS_DIR=secrets` in your
-  shell before running.
 
 More detail: [SECURITY.md](SECURITY.md).
 
@@ -210,18 +231,16 @@ already in `config/<provider>.env`.
    ```bash
    MAIL_PROFILE=gmail
    IMAP_USERNAME=you@gmail.com
-   IMAP_PASSWORD=abcdefghijklmnop        # the App Password, without spaces
+   # the App Password, without spaces
+   IMAP_PASSWORD=abcdefghijklmnop
    ```
 
-   For Docker, keep `IMAP_PASSWORD` empty in `.env` and put the password in a file instead:
-   `printf '%s' 'abcdefghijklmnop' > secrets/imap_password`.
-5. **Run:** `python -m email_agent.main --limit 5` (or `docker compose up -d`).
+5. **Run:** `./start.sh` (Docker) or `python -m email_agent.main --limit 5`.
 
 ### Yahoo Mail
 
 1. Yahoo > Account info > **Account security** > **Generate app password**. Copy it.
-2. In `.env`: `MAIL_PROFILE=yahoo`, `IMAP_USERNAME=you@yahoo.com`, `IMAP_PASSWORD=<app password>`
-   (Docker: the password goes in `secrets/imap_password`).
+2. In `.env`: `MAIL_PROFILE=yahoo`, `IMAP_USERNAME=you@yahoo.com`, `IMAP_PASSWORD=<app password>`.
 3. Run as above.
 
 ### Outlook.com / Microsoft 365
@@ -232,10 +251,9 @@ Microsoft no longer accepts passwords for IMAP. You need an **OAuth2 access toke
    delegated permissions `IMAP.AccessAsUser.All` and `SMTP.Send`.
 2. Get an access token for your account with these scopes (for example with the MSAL device-code flow).
    The agent does not fetch tokens itself.
-3. In `.env`: `MAIL_PROFILE=outlook`, `IMAP_USERNAME=you@outlook.com`, `IMAP_OAUTH_TOKEN=<token>`
-   (Docker: the token goes in `secrets/imap_oauth_token`).
+3. In `.env`: `MAIL_PROFILE=outlook`, `IMAP_USERNAME=you@outlook.com`, `IMAP_OAUTH_TOKEN=<token>`.
 4. Tokens last about an hour. The agent reads the token again before every check, so a script that refreshes
-   it can simply overwrite the file.
+   it can simply store the new one in `.env` (Docker: then run `./start.sh` again).
 
 Outlook does not support custom labels, so the outlook profile turns labels off.
 
@@ -395,12 +413,12 @@ email_agent/          the agent (start reading at main.py, then agent.py)
   models.py           Pydantic data models
   categories.py       category descriptions and reply instructions (edit to change behaviour)
   config.py           all settings
+  keystore.py         encrypted keystore for the secrets (built into the Docker image)
   telemetry.py        OpenTelemetry setup
 config/               provider profiles (gmail, outlook, yahoo) - no secrets
 data/mock_inbox.json  23 sample emails, including 6 attack emails
 tests/                offline test suite
 observability/        Collector, Tempo, Loki, Prometheus and Grafana config
-secrets/              your secret files for Docker (ignored by git)
 ```
 
 ---
@@ -410,7 +428,10 @@ secrets/              your secret files for Docker (ignored by git)
 | Problem | Fix |
 |---|---|
 | `quota exhausted` or HTTP 429 | The free Gemini daily limit is used up. Wait until tomorrow, use a smaller `--limit`, try another `GEMINI_MODEL`, or switch to `LLM_PROVIDER=huggingface` with `HF_TOKEN`. Emails that were not handled are picked up on the next run. |
-| `Set GEMINI_API_KEY ...` | The key is missing: add it to `.env` (local) or `secrets/gemini_api_key` (Docker). |
+| `Set GEMINI_API_KEY ...` | The key is missing: add it to `.env` and run `./start.sh` again (or just run locally). |
+| `keystore password file ... is missing` | Start with `./start.sh` (it passes `keystore_password` to Docker). |
+| `HF_TOKEN points to keystore:HF_TOKEN, which is not in the keystore` | Your `.env` should have the real value, not the reference. Fix it and run `./start.sh` again. |
+| `Wrong keystore password or damaged keystore` | The password does not match this keystore. To start over, see [section 4](#4-where-secrets-go). |
 | HTTP 400 `API key not valid` | The key is wrong or has extra characters. Copy it again. |
 | `Set IMAP_HOST ...` | Add `MAIL_PROFILE=gmail` (or `outlook`, `yahoo`) to `.env`. |
 | Docker on Linux: `Permission denied` | Run the `chown 10001` commands at the end of [section 3](#3-quick-start-docker). |

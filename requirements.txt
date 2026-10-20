@@ -1,6 +1,7 @@
 pydantic==2.9.2
 pydantic-settings==2.6.1
 requests==2.32.3
+cryptography==43.0.3
 opentelemetry-sdk==1.28.0
 opentelemetry-exporter-otlp-proto-http==1.28.0
 opentelemetry-instrumentation-requests==0.49b0

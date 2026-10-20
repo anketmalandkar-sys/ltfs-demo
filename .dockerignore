@@ -5,4 +5,4 @@ output
 *.iml
 **/__pycache__
 .pytest_cache
-secrets
+keystore_password

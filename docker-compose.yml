@@ -1,21 +1,27 @@
-# Start:  docker compose up -d   (agent + Grafana on http://localhost:3000)
-# Secrets are files in ./secrets/ (gemini_api_key, imap_password, ...), mounted read-only at /run/secrets/
-# and never put in environment variables (those show up in `docker inspect`). Create only the ones you use.
-# Everything else (MAIL_PROFILE, IMAP_USERNAME, limits) is read from .env.
+# Start:  ./start.sh  (Windows: .\start.ps1)  - agent + Grafana on http://localhost:3000
+#
+# Your .env keeps the real values. The image build turns it into an encrypted keystore plus a .env in the image
+# where each secret is a reference (HF_TOKEN=keystore:HF_TOKEN). .env and the password reach the build as build
+# secrets (never stored in a layer); at runtime the password is a Docker secret, mounted at /run/secrets/.
+# The password is in ./keystore_password: start.sh creates it with a placeholder that you replace (never committed).
+secrets:
+  dotenv:            { file: ./.env }
+  keystore_password: { file: ./keystore_password }
 
 services:
   email-agent:
-    build: { context: ., target: runtime }
-    env_file:  # non-secret settings only
-      - path: .env
-        required: false
+    build:
+      context: .
+      target: runtime
+      secrets: [dotenv, keystore_password]
+      args: { CONFIG_HASH: "${CONFIG_HASH:-none}" }  # start.sh: changes with .env, so the keystore is rebuilt
+    secrets: [keystore_password]
     environment:
       OTEL_TRACES_EXPORTER: otlp                          # traces, metrics and logs
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       # Raw LLM prompts/replies (customer email text!) in Tempo and Loki. Set false in .env to stop.
       OTEL_CAPTURE_CONTENT: ${OTEL_CAPTURE_CONTENT:-true}
     volumes:
-      - ./secrets:/run/secrets:ro
       - ./output:/app/output  # the only writable path
     # Keeps running: the mailbox from .env (IMAP_USERNAME set) or else the mock inbox. On new mail (IMAP IDLE)
     # it labels emails, sends clean replies and saves the rest as drafts.

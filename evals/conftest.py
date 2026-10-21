@@ -5,6 +5,7 @@ import pytest
 from email_agent.main import build_llm, load_settings
 
 from .metrics import AgentJudgeModel
+from .page import write_page
 from .report import Report
 from .runner import CachedLLM, judge_settings
 
@@ -65,4 +66,4 @@ def pytest_terminal_summary(terminalreporter, config):
         return
     terminalreporter.write_line("\n" + REPORT.text())
     path = REPORT.save()
-    terminalreporter.write_line(f"\nReport: {path}")
+    terminalreporter.write_line(f"\nReport: {path}\nPage:   {write_page(REPORT.output_dir)}  (open it in a browser)")

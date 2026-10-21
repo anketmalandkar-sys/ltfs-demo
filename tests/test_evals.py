@@ -278,3 +278,23 @@ def test_report_counts_rates_confusion_and_pending(tmp_path):
     assert "1 cases are pending" in report.text()
     saved = json.loads(report.save().read_text(encoding="utf-8"))
     assert len(saved["records"]) == 4
+
+
+# ---------------------------------------------------------------- page ----
+
+
+def test_html_page_shows_history_latest_cases_and_escapes_email_text(tmp_path):
+    from evals.page import write_page
+
+    for when, status in [("20261020T100000Z", Status.NEEDS_REVIEW), ("20261021T100000Z", Status.DRAFTED)]:
+        report = Report()
+        report.output_dir, report.model = tmp_path, "openai/gpt-4.1-mini"
+        res = result(status, body=f"<script>alert(1)</script>\n{SIGNATURE}" if status is Status.DRAFTED else "")
+        metrics = metrics_for(CASES["e13"], res, None)
+        measure(metrics, as_test_case(CASES["e13"], res, SIGNATURE))
+        report.add(CASES["e13"], res, metrics, llm_calls=2)
+        report.save().rename(tmp_path / f"report-openai_gpt-4.1-mini-{when}.json")
+    page = write_page(tmp_path).read_text(encoding="utf-8")
+    assert page.count('<tr class="run') == 2  # one history row per report
+    assert "2026-10-21 10:00" in page and "Charged foreclosure fee" in page  # latest run, with the subject
+    assert "&lt;script&gt;" in page and "<script>alert" not in page  # email and reply text is escaped

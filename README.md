@@ -369,8 +369,10 @@ docker compose run --rm evals --judge --judge-provider openai  # judge with Open
 docker compose run --rm evals --judge --judge-model gemini-2.5-flash   # or another model of the same provider
 ```
 
-At the end you get a summary (pass rates, precision/recall per category, a confusion table) and a JSON
-report in `output/evals/`.
+At the end you get a summary (pass rates, precision/recall per category, a confusion table), a JSON
+report in `output/evals/`, and **`output/evals/index.html`**: open it in a browser to see every run, the
+latest scores, and each case with its reply and the reason behind every check (`python -m evals.page`
+rebuilds it).
 
 - **It never sends mail** and never saves drafts.
 - `./start.sh` / `.\start.ps1` builds the evals image too. After you change `.env`, run it again so the

@@ -55,7 +55,7 @@ flowchart LR
     AG --> MB["mailbox.py<br/>MockMailbox / ImapMailbox<br/>ImapWatcher (IDLE)"]
     AG --> GR["guardrails.py<br/>sanitize, inspect, check_result"]
     AG --> TL["tools.py<br/>ToolSession: 2 tools"]
-    AG --> LLM["llm.py<br/>GeminiClient / HuggingFaceClient"]
+    AG --> LLM["llm.py<br/>GeminiClient / OpenAIClient / HuggingFaceClient"]
     AG --> ST["state.py<br/>processed ids, threads, attempts"]
     AG --> AC["actions.py<br/>logs, review queue, drafts, labels"]
     AC --> MB
@@ -445,8 +445,8 @@ flowchart LR
 
 ### Security of the deployment
 
-- **Secrets are in an encrypted keystore, not environment variables.** `GEMINI_API_KEY`, `HF_TOKEN`,
-  `IMAP_PASSWORD` and `IMAP_OAUTH_TOKEN` are put into an encrypted keystore while the image is built
+- **Secrets are in an encrypted keystore, not environment variables.** `GEMINI_API_KEY`, `OPENAI_API_KEY`,
+  `HF_TOKEN`, `IMAP_PASSWORD` and `IMAP_OAUTH_TOKEN` are put into an encrypted keystore while the image is built
   (`.env` and the password are build secrets, never stored in a layer). The password is a Docker secret at
   runtime, from `keystore_password` (set by the user, never committed). Environment variables would show up in
   `docker inspect` and `/proc/*/environ`. The image's `.env` holds only references (`HF_TOKEN=keystore:HF_TOKEN`), and
@@ -550,8 +550,9 @@ All of them are listed with comments in [`.env.example`](.env.example).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LLM_PROVIDER` | `gemini` | `gemini` or `huggingface` |
+| `LLM_PROVIDER` | `gemini` | `gemini`, `openai` or `huggingface` |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | - / `gemini-2.5-flash` | Gemini key and model |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | - / `gpt-4.1-mini` | OpenAI API key and chat model |
 | `HF_TOKEN` / `HF_MODEL` | - / `Qwen/Qwen2.5-72B-Instruct` | Hugging Face token and a model that supports tool calling |
 | `IMAP_HOST` / `IMAP_PORT` | from profile / `993` | IMAP server (TLS only) |
 | `MAIL_PROFILE` | - | Provider profile: `gmail`, `outlook` or `yahoo` |
@@ -624,5 +625,11 @@ Every module was built test-first (red -> green -> refactor), in this order: mod
 - The test suite runs fully offline. IMAP and HTTP are faked, and a scripted `FakeLLM` plays the model.
 - One end-to-end test checks that all 23 mock emails reach their expected status.
 - `pytest -m live` (opt-in) calls a real LLM.
+- **Evals** (`evals/`, `docker compose run --rm evals`) measure quality with the real LLM: the full
+  pipeline runs on 36 labeled emails in `data/eval_set.json`, and DeepEval metrics score status, category,
+  attack containment, reply facts and extracted fields. An optional GEval LLM judge grades the replies, and
+  4 labeled probe replies check that the judge is reliable. LLM replies are cached by request, so reruns
+  cost nothing until the prompt, tools, model or a case changes. Each run has a request limit
+  (`--max-calls`) to stay inside free-tier quotas. The judge reuses our own Gemini/HF client (`AgentJudgeModel`), and `--judge-provider` lets another provider grade the replies (e.g. OpenAI grading Gemini).
 - Code style is checked with `ruff` (lint and format). GitHub Actions runs the linter and the tests on
   every push (`.github/workflows/ci.yml`).

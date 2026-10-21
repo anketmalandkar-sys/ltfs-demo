@@ -1,0 +1,3 @@
+# Evals only (docker compose run --rm evals); not part of the agent image.
+-r requirements.txt
+deepeval==4.2.8

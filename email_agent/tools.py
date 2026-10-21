@@ -30,7 +30,7 @@ class SubmitTriageArgs(BaseModel):
     confidence: float = Field(ge=0, le=1, description="0..1, how sure you are")
     priority: Priority | None = Field(None, description="P1 (critical) .. P4 (low); incidents and complaints")
     summary: str = Field(max_length=300, description="One neutral sentence")
-    fields: ExtractedFields = Field(ExtractedFields(), description="Only values literally present in the email")
+    fields: ExtractedFields = Field(description="Values literally present in the email; {} if none")
 
 
 class SubmitReplyArgs(BaseModel):

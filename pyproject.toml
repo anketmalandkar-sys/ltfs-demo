@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = ["live: hits a real LLM API (needs API key)"]
-addopts = "-m 'not live'"
+addopts = "-m 'not live' -p no:deepeval"  # the deepeval plugin would load .env into the environment
 filterwarnings = ["ignore:Type google._upb._message:DeprecationWarning"]
 
 [tool.ruff]

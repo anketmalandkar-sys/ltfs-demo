@@ -2,6 +2,7 @@
 # Starts the agent and the dashboard. The image is rebuilt when .env or the keystore password changed: the build
 # puts the secrets from .env into an encrypted keystore in the image (your .env stays as it is).
 # The running agent keeps working until the new image replaces it, so changing the password is safe.
+# The evals image is rebuilt too, so `docker compose run --rm evals` always has the same secrets.
 set -e
 cd "$(dirname "$0")"
 [ -f .env ] || cp .env.example .env
@@ -20,4 +21,5 @@ if command -v sha256sum >/dev/null; then hash=sha256sum; else hash="shasum -a 25
 CONFIG_HASH="$(cat .env keystore_password | $hash | cut -c1-16)"
 export CONFIG_HASH
 docker compose up -d --build
+docker compose --profile evals build evals
 echo "Running. Dashboard: http://localhost:3000   Logs: docker compose logs -f email-agent"

@@ -45,7 +45,13 @@ def oracle(email_id, step):
     category = EXPECTED[email_id]["expected_category"] or "out_of_scope"
     if step == 0:
         return call(
-            "submit_triage", email_id=email_id, category=category, confidence=0.9, priority="P2", summary="Summary"
+            "submit_triage",
+            email_id=email_id,
+            category=category,
+            confidence=0.9,
+            priority="P2",
+            summary="Summary",
+            fields={},
         )
     if step == 1:
         return call("submit_reply", email_id=email_id, subject="Re: your email", body=GROUNDED_REPLY)
@@ -302,6 +308,9 @@ def test_system_prompt_has_rules_categories_and_canary_but_no_email():
     assert "Never state the status of a payment" in prompt
     assert "the team will confirm the status" in prompt  # disbursement guidance
     assert "{signature} already includes the closing" in prompt
+    assert "fill fields" in prompt  # models skip the optional fields argument otherwise
+    assert "exact file name" in prompt  # KYC replies name each attachment
+    assert "due date only if the email states one" in prompt  # a bill date is not a due date
 
 
 def test_email_content_reaches_llm_only_inside_nonce_tags(tmp_path):

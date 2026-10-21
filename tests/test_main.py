@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from email_agent import main as cli
-from email_agent.llm import GeminiClient, HuggingFaceClient
+from email_agent.llm import GeminiClient, HuggingFaceClient, OpenAIClient
 
 from .test_agent import FakeLLM, oracle
 
@@ -15,6 +15,7 @@ def env(monkeypatch, tmp_path):
         "LLM_PROVIDER",
         "GEMINI_API_KEY",
         "HF_TOKEN",
+        "OPENAI_API_KEY",
         "IMAP_HOST",
         "IMAP_USERNAME",
         "IMAP_PASSWORD",
@@ -97,6 +98,8 @@ def test_missing_api_key_is_a_clear_error(env):
         cli.build_llm(Settings(_env_file=None))
     with pytest.raises(SystemExit, match="HF_TOKEN"):
         cli.build_llm(Settings(_env_file=None, llm_provider="huggingface"))
+    with pytest.raises(SystemExit, match="OPENAI_API_KEY"):
+        cli.build_llm(Settings(_env_file=None, llm_provider="openai"))
 
 
 def test_build_llm_picks_provider(env):
@@ -105,6 +108,15 @@ def test_build_llm_picks_provider(env):
     assert isinstance(cli.build_llm(Settings(_env_file=None, gemini_api_key="k")), GeminiClient)
     hf = cli.build_llm(Settings(_env_file=None, llm_provider="huggingface", hf_token="t", hf_model="org/m"))
     assert isinstance(hf, HuggingFaceClient) and hf.model == "org/m"
+    oa = cli.build_llm(Settings(_env_file=None, llm_provider="openai", openai_api_key="sk"))
+    assert isinstance(oa, OpenAIClient) and oa.model == "gpt-4.1-mini"
+    assert Settings(_env_file=None, llm_provider="openai").llm_model == "gpt-4.1-mini"
+
+
+def test_openai_key_comes_from_the_keystore(env, tmp_path):
+    use_keystore(env, tmp_path, {"OPENAI_API_KEY": "sk-real"})
+    env.setenv("OPENAI_API_KEY", "keystore:OPENAI_API_KEY")
+    assert cli.load_settings(None).openai_api_key.get_secret_value() == "sk-real"
 
 
 def test_build_llm_applies_requests_per_minute(env):

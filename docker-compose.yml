@@ -93,6 +93,24 @@ services:
     build: { context: ., target: test }
     profiles: ["test"]
 
+  # Evals: the real agent and LLM on data/eval_set.json (see README, "Evals"). Never sends mail or saves drafts.
+  #   docker compose run --rm evals [--judge] [--max-calls 15]
+  # No OTEL exporter on purpose: eval runs must not show up as real emails on the dashboard.
+  evals:
+    build:
+      context: .
+      target: evals
+      secrets: [dotenv, keystore_password]
+      args: { CONFIG_HASH: "${CONFIG_HASH:-none}" }
+    profiles: ["evals"]
+    secrets: [keystore_password]
+    volumes:
+      - ./output:/app/output  # LLM reply cache and reports in ./output/evals
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
 volumes:
   tempo-data:
   loki-data:

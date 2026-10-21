@@ -26,10 +26,10 @@ categories are sent (`AUTO_SEND`, on by default); everything else stays a draft 
 |---|---|---|
 | `incident` | `escalated` | Acknowledgement with priority; goes to the review queue |
 | `bank_statement` | `filed` | None; period, masked account and balance are extracted |
-| `financial_disbursement` | `drafted` | Confirms amount, reference and masked account exactly as written |
+| `financial_disbursement` | `drafted` | Repeats amount, reference and masked account exactly as written; the team will confirm the status |
 | `payment_request` | `drafted` | Acknowledges invoice, amount and due date |
 | `customer_complaint` | `drafted` | Apology, `{ticket_id}`, `{sla}` |
-| `kyc_document` | `drafted` | Acknowledges documents, lists missing ones |
+| `kyc_document` | `drafted` | Acknowledges attached documents by name; never claims some are missing or lists documents itself (the team will confirm), `{ticket_id}`, `{sla}` |
 | `phishing_suspicious` | `quarantined` | None |
 | anything else | `ignored` | None; only the id and status are kept |
 
@@ -54,7 +54,7 @@ flowchart LR
     CFG["config.py<br/>Settings: env, profile,<br/>keystore"] --> CLI
     AG --> MB["mailbox.py<br/>MockMailbox / ImapMailbox<br/>ImapWatcher (IDLE)"]
     AG --> GR["guardrails.py<br/>sanitize, inspect, check_result"]
-    AG --> TL["tools.py<br/>ToolSession: 3 tools"]
+    AG --> TL["tools.py<br/>ToolSession: 2 tools"]
     AG --> LLM["llm.py<br/>GeminiClient / HuggingFaceClient"]
     AG --> ST["state.py<br/>processed ids, threads, attempts"]
     AG --> AC["actions.py<br/>logs, review queue, drafts, labels"]
@@ -210,6 +210,9 @@ sequenceDiagram
     A->>A: fill {ticket_id} {sla} {signature}
 ```
 
+The model often sends `submit_triage` and `submit_reply` together in one reply. They are run in order, so
+one LLM call is then enough. Otherwise it takes two, and one for categories that get no reply.
+
 If the model answers with text instead of a tool call, it gets one reminder. If it does it again, the email
 goes to `needs_review`. `MAX_STEPS` limits each conversation, and `MAX_LLM_CALLS_PER_RUN` limits each run.
 
@@ -233,7 +236,7 @@ flowchart LR
         J4[nonce-wrapped email content]
     end
     subgraph TOOL["3. Tool calls"]
-        T1[3 tools only, no send / forward / fetch]
+        T1[2 tools only, no send / forward / fetch]
         T2[Pydantic-validated args]
         T3[email_id pinned, call order enforced]
         T4[max steps, LLM budget]
@@ -284,9 +287,9 @@ The agent assumes every email is hostile. The goal: a successful injection can a
 | 4 | Scan the **raw** email (hidden text and quotes included). **Strong** hits are quarantined before any LLM call: "ignore previous instructions", role markers (`system:`, `<\|im_start\|>`, `[INST]`), our tool names, mass-forward requests, requests to change a beneficiary or bank details. **Weak** hits ("act as", "system prompt", long encoded blobs, hidden text) mean no automatic reply | `guardrails.detect_injection`, `inspect` |
 | 5 | Sender checks: SPF/DKIM/DMARC failure, a brand name on a free-mail address, a different Reply-To. Two or more signals quarantine the email; one signal sends financial categories to review | `guardrails.sender_signals` |
 | 6 | Structural isolation. Instructions exist only in the system prompt. The email reaches the model only in the first user message, inside `<email_content nonce="random">`, and look-alike tags in the body are escaped | `tools.render_email` |
-| 7 | Least privilege. The model can read one email (its id is pinned) and submit a triage and a reply. It has no tool to send, forward, list or fetch, and every email gets a fresh context | `tools.ToolSession` |
+| 7 | Least privilege. The model sees one email and can only submit a triage and a reply for it (the email id is pinned). It has no tool to send, forward, list or fetch, and every email gets a fresh context | `tools.ToolSession` |
 | 8 | Output checks. A canary token catches system-prompt leaks. Every number in a reply must appear in the email. URLs, email addresses, phone numbers and promises ("we will refund") are blocked. So are payment statuses the email never states ("is being processed", "will be credited") and claims of actions nobody took ("has been sent to accounts payable", "we have notified the team"; "escalated" is allowed only for escalated incidents). Reply-To is never used as the recipient | `guardrails.check_result`, `mailbox.build_reply` |
-| 9 | IDs, contacts and links come only from code. `{ticket_id}`, `{sla}` and `{signature}` are filled in after the checks. The ticket id is a hash of the email (`LTFS-1A2B3C4D`), so reprocessing gives the same one. An LLM-written closing right above `{signature}` is dropped to avoid signing off twice | `actions.fill_placeholders` |
+| 9 | IDs, contacts and links come only from code. `{ticket_id}`, `{sla}` and `{signature}` are filled in after the checks. The ticket id is a hash of the email (`LTFS-1A2B3C4D`), so reprocessing gives the same one. An LLM-written closing right above `{signature}` is dropped to avoid signing off twice, and so is a word the SLA text already starts with ("within {sla}") | `actions.fill_placeholders` |
 
 ---
 

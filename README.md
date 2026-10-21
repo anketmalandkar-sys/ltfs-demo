@@ -404,7 +404,7 @@ email_agent/          the agent (start reading at main.py, then agent.py)
   main.py             command line, settings loading, watch loop
   agent.py            the per-email pipeline and the LLM tool loop
   guardrails.py       all safety checks (input cleaning, injection, output checks)
-  tools.py            the 3 tools the AI may call
+  tools.py            the 2 tools the AI may call (submit a triage, submit a reply)
   llm.py              Gemini and Hugging Face HTTP clients
   mailbox.py          mock inbox and IMAP mailbox
   actions.py          what happens after a decision: logs, drafts, labels, sending

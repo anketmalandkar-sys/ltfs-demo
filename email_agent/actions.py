@@ -36,6 +36,8 @@ def _drop_closing_before_signature(body: str) -> str:
 def fill_placeholders(body: str, ticket_id: str, sla: str, signature: str) -> str:
     """Values the LLM must never invent are inserted here. Unknown placeholders are removed."""
     body = _drop_closing_before_signature(body)
+    if lead := sla.split(" ", 1)[0]:  # "within {sla}" with sla "within 2 business days": no "within within"
+        body = re.sub(rf"\b{re.escape(lead)}\s+(?=\{{sla\}})", "", body, flags=re.I)
     body = body.replace("{ticket_id}", ticket_id).replace("{sla}", sla).replace("{signature}", signature)
     return re.sub(r"\{[a-z_]+\}", "", body)
 

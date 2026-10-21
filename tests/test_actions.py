@@ -33,6 +33,12 @@ def test_fill_placeholders_fills_known_and_removes_unknown():
     assert fill_placeholders(body, "LTFS-1", "within 2 days", "Team") == "Ticket LTFS-1, reply within 2 days. \nTeam"
 
 
+@pytest.mark.parametrize("before", ["within {sla}", "Within {sla}", "{sla}"])
+def test_sla_lead_word_is_not_doubled(before):
+    body = f"We will respond {before}."
+    assert fill_placeholders(body, "T", "within 2 business days", "S") == "We will respond within 2 business days."
+
+
 SIGNATURE = "Regards,\nCustomer Care Team"
 
 

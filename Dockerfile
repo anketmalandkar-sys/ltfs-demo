@@ -11,9 +11,10 @@ RUN mkdir -p /app/output && chown agent:agent /app/output
 
 # Test image: docker compose run --rm tests
 FROM base AS test
-COPY requirements-dev.txt pyproject.toml .env.example ./
+COPY requirements-dev.txt requirements-eval.txt pyproject.toml .env.example ./
 RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY tests ./tests
+COPY evals ./evals
 USER agent
 ENTRYPOINT ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 
@@ -30,3 +31,13 @@ ENV KEYSTORE_PATH=/app/keystore.enc KEYSTORE_PASSWORD_FILE=/run/secrets/keystore
 USER agent
 ENTRYPOINT ["python", "-m", "email_agent.main"]
 CMD ["--source", "mock"]
+
+# Evals image: docker compose run --rm evals. The runtime image (same keystore) plus DeepEval and the evals.
+FROM runtime AS evals
+USER root
+COPY requirements-eval.txt pyproject.toml ./
+RUN pip install --no-cache-dir -r requirements-eval.txt
+COPY evals ./evals
+USER agent
+ENTRYPOINT ["python", "-m", "pytest", "evals", "-q", "--tb=short", "-p", "no:cacheprovider"]
+CMD []

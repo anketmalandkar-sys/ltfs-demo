@@ -8,6 +8,7 @@ from email_agent.llm import (
     GeminiClient,
     HuggingFaceClient,
     LLMError,
+    OpenAIClient,
     QuotaExhausted,
     ToolCall,
 )
@@ -86,6 +87,16 @@ def test_gemini_echoes_model_turn_with_thought_signature_and_sends_tool_results(
         "parts": [{"functionResponse": {"name": "read_email", "response": {"result": "<email>"}}}],
     }
     assert final.text == "Done." and final.tool_calls == []
+
+
+def test_plain_text_chat_sends_no_tools():  # the eval judge answers in text, without tools
+    client, session = gemini(FakeResponse(200, GEMINI_TEXT))
+    assert client.chat("S", [{"role": "user", "content": "x"}], []).text == "Done."
+    assert "tools" not in session.posts[0]["json"]
+    hf_session = FakeSession(FakeResponse(200, {"choices": [{"message": {"content": "Done."}}]}))
+    hf = HuggingFaceClient("hf-token", "m", session=hf_session, sleep=lambda s: None)
+    assert hf.chat("S", [{"role": "user", "content": "x"}], []).text == "Done."
+    assert "tools" not in hf_session.posts[0]["json"] and "tool_choice" not in hf_session.posts[0]["json"]
 
 
 def test_gemini_blocked_response_returns_empty_reply():
@@ -255,6 +266,32 @@ def test_huggingface_request_and_argument_parsing():
         {"_unparseable_arguments": "{not json"},
     ]
     assert reply.usage == {"input_tokens": 50, "output_tokens": 20}
+
+
+def openai(*responses):
+    session = FakeSession(*responses)
+    return OpenAIClient("sk-test", "gpt-4.1-mini", session=session, sleep=lambda s: None), session
+
+
+def test_openai_request_shape_and_tool_call_parsing():
+    client, session = openai(FakeResponse(200, HF_TOOL_CALL))
+    reply = client.chat("SYSTEM", [{"role": "user", "content": "Triage e1"}], TOOLS)
+    post = session.posts[0]
+    assert post["url"] == "https://api.openai.com/v1/chat/completions"
+    assert post["headers"]["Authorization"] == "Bearer sk-test"
+    assert post["json"]["model"] == "gpt-4.1-mini" and post["json"]["temperature"] == 0
+    assert post["json"]["max_completion_tokens"] == 1024 and "max_tokens" not in post["json"]
+    assert post["json"]["tools"][0] == {"type": "function", "function": TOOLS[0]}
+    assert reply.tool_calls[0].args == {"email_id": "e1", "category": "incident"}
+    assert client.system == "openai"
+
+
+def test_openai_out_of_credit_is_fatal_and_not_retried():
+    body = {"error": {"message": "You exceeded your current quota.", "code": "insufficient_quota"}}
+    client, session = openai(FakeResponse(429, body), FakeResponse(200, HF_TOOL_CALL))
+    with pytest.raises(QuotaExhausted) as exc:
+        client.chat("S", [{"role": "user", "content": "x"}], TOOLS)
+    assert len(session.posts) == 1 and "sk-test" not in str(exc.value)
 
 
 def test_huggingface_sends_assistant_and_tool_messages():

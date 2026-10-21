@@ -25,7 +25,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from dotenv import dotenv_values
 
-NAMES = ("GEMINI_API_KEY", "HF_TOKEN", "IMAP_PASSWORD", "IMAP_OAUTH_TOKEN")
+NAMES = ("GEMINI_API_KEY", "HF_TOKEN", "OPENAI_API_KEY", "IMAP_PASSWORD", "IMAP_OAUTH_TOKEN")
 PREFIX = "keystore:"
 VERSION = 1
 START_HINT = "start with ./start.sh (Windows: .\\start.ps1)"

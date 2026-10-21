@@ -15,11 +15,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # LLM
-    llm_provider: Literal["gemini", "huggingface"] = "gemini"
+    llm_provider: Literal["gemini", "huggingface", "openai"] = "gemini"
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-2.5-flash"
     hf_token: SecretStr | None = None
     hf_model: str = "Qwen/Qwen2.5-72B-Instruct"
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-4.1-mini"
     llm_requests_per_minute: int = Field(0, ge=0)  # 0 = no client-side limit; free Gemini tier needs ~5
     llm_timeout_seconds: float = Field(90, gt=0)  # per HTTP attempt; slower answers are retried
     # Cost estimate in USD per million tokens (your model's price list; 0 = not tracked, e.g. free tier)
@@ -75,6 +77,13 @@ class Settings(BaseSettings):
             if name not in {c.value for c in Category} or name == Category.PHISHING_SUSPICIOUS.value:
                 raise ValueError(f"AUTO_SEND_CATEGORIES: '{name}' is not a category that can be sent")
         return value
+
+    @property
+    def llm_model(self) -> str:
+        """The model of the chosen LLM_PROVIDER."""
+        return {"gemini": self.gemini_model, "huggingface": self.hf_model, "openai": self.openai_model}[
+            self.llm_provider
+        ]
 
     @property
     def send_categories(self) -> frozenset[Category]:

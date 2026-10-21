@@ -36,7 +36,7 @@ def test_fill_placeholders_fills_known_and_removes_unknown():
 @pytest.mark.parametrize("before", ["within {sla}", "Within {sla}", "{sla}"])
 def test_sla_lead_word_is_not_doubled(before):
     body = f"We will respond {before}."
-    assert fill_placeholders(body, "T", "within 2 business days", "S") == "We will respond within 2 business days."
+    assert fill_placeholders(body, "T", "within 2 business days", "S") == "We will respond within 2 business days.\n\nS"
 
 
 SIGNATURE = "Regards,\nCustomer Care Team"
@@ -51,6 +51,9 @@ SIGNATURE = "Regards,\nCustomer Care Team"
         "We acknowledge your query.\n\nThanks and regards\n{signature}",
         "We acknowledge your query.\n\nSincerely,\n{signature}",
         "We acknowledge your query.\n\n{signature}",
+        # the model left out {signature}: it is added, so every reply is signed
+        "We acknowledge your query.",
+        "We acknowledge your query.\n\nRegards,",
     ],
 )
 def test_no_double_sign_off(body):

@@ -18,7 +18,8 @@ CATEGORIES = {
     ),
     Category.PAYMENT_REQUEST: (
         "Invoice, bill or request for payment from a vendor.",
-        "Acknowledge the invoice number, amount and due date, and say the accounts team will review it and confirm.",
+        "Acknowledge the invoice number and amount, and the due date only if the email states one (a bill or "
+        "invoice date is not a due date). Say the accounts team will review it and confirm.",
     ),
     Category.CUSTOMER_COMPLAINT: (
         "A customer complaining about a service, charge, deduction or delay.",
@@ -26,7 +27,8 @@ CATEGORIES = {
     ),
     Category.KYC_DOCUMENT: (
         "KYC documents submitted or requested (PAN, Aadhaar, address proof, photo).",
-        "If documents are attached, acknowledge them by attachment name. If none are attached, say the team will "
+        "If documents are attached, acknowledge each one by its exact file name from the Attachments line (e.g. "
+        "pan.pdf), not by a description. If none are attached, say the team will "
         "review them once received; never say that attachments are missing or were not found. Never list documents "
         "yourself: if they ask what else is needed, say the team will confirm. Mention the reference {ticket_id} and "
         "that we will respond {sla} within a sentence, not as separate label lines.",

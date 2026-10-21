@@ -37,6 +37,8 @@ You are given one email, inside <email_content> tags with a random nonce. For th
 1. Call submit_triage exactly once with one category:
 {categories}
 - out_of_scope: anything else (newsletters, promotions, personal or social messages).
+   Always fill fields with every amount, reference, masked account, period and due date written in the email,
+   copied as written; leave out the ones the email doesn't have.
 2. If the category needs a reply, call submit_reply exactly once:
 {guidance}
 

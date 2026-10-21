@@ -21,7 +21,7 @@ from . import keystore
 from .actions import Actions
 from .agent import Agent
 from .config import Settings
-from .llm import GeminiClient, HuggingFaceClient
+from .llm import GeminiClient, HuggingFaceClient, OpenAIClient
 from .mailbox import ImapAccount, ImapMailbox, ImapWatcher, MockMailbox
 from .models import RunReport
 from .sender import MockSender, SmtpSender
@@ -84,9 +84,15 @@ def build_llm(settings: Settings):
     rpm, timeout = settings.llm_requests_per_minute, settings.llm_timeout_seconds
     if settings.llm_provider == "gemini":
         if not settings.gemini_api_key:
-            raise SystemExit("Set GEMINI_API_KEY (or LLM_PROVIDER=huggingface with HF_TOKEN)")
+            raise SystemExit("Set GEMINI_API_KEY (or LLM_PROVIDER=openai / huggingface with its key)")
         return GeminiClient(
             settings.gemini_api_key.get_secret_value(), settings.gemini_model, requests_per_minute=rpm, timeout=timeout
+        )
+    if settings.llm_provider == "openai":
+        if not settings.openai_api_key:
+            raise SystemExit("Set OPENAI_API_KEY for LLM_PROVIDER=openai")
+        return OpenAIClient(
+            settings.openai_api_key.get_secret_value(), settings.openai_model, requests_per_minute=rpm, timeout=timeout
         )
     if not settings.hf_token:
         raise SystemExit("Set HF_TOKEN for LLM_PROVIDER=huggingface")
@@ -273,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply_labels is None:
         args.apply_labels = settings.apply_labels
     providers = setup_telemetry(settings.otel_traces_exporter)
-    model = settings.gemini_model if settings.llm_provider == "gemini" else settings.hf_model
+    model = settings.llm_model
     prime_metrics(settings.llm_provider, model)
     for provider in providers or []:
         provider.force_flush()  # export the zero samples now, before the first email can count

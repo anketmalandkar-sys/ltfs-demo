@@ -5,7 +5,7 @@ This page explains how the agent keeps credentials and customer data safe. The f
 
 ## Credentials
 
-The agent uses up to four secrets: `GEMINI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD` and `IMAP_OAUTH_TOKEN`.
+The agent uses up to five secrets: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD` and `IMAP_OAUTH_TOKEN`.
 
 | Rule | How |
 |---|---|

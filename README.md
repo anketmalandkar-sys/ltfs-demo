@@ -17,7 +17,7 @@ Key points:
   (23 sample emails, including 6 attacks) lets you try it without a real mailbox.
 - **Observable.** OpenTelemetry traces, metrics and logs, with a ready-made Grafana dashboard.
 
-**Tech stack:** Python 3.12, Pydantic, Gemini or Hugging Face (plain HTTP), OpenTelemetry, Docker Compose.
+**Tech stack:** Python 3.12, Pydantic, Gemini, OpenAI or Hugging Face (plain HTTP), OpenTelemetry, Docker Compose.
 
 How it works inside, with diagrams: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 How secrets are handled: **[SECURITY.md](SECURITY.md)**.
@@ -34,7 +34,7 @@ How secrets are handled: **[SECURITY.md](SECURITY.md)**.
 6. [Sending replies](#6-sending-replies)
 7. [Run it all the time (deploy)](#7-run-it-all-the-time-deploy)
 8. [Dashboard (Grafana)](#8-dashboard-grafana)
-9. [Running the tests](#9-running-the-tests)
+9. [Running the tests and evals](#9-running-the-tests-and-evals)
 10. [Output files](#10-output-files)
 11. [Command-line options](#11-command-line-options)
 12. [Project layout](#12-project-layout)
@@ -178,8 +178,8 @@ Changed `.env`? Run the start script again: it rebuilds the image with the new v
 
 **Your `.env` keeps every setting with the real values.** Local Python runs read it as it is.
 
-**The Docker image gets an encrypted keystore instead.** While the image is built, the four secrets
-(`GEMINI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD`, `IMAP_OAUTH_TOKEN`) are moved into `/app/keystore.enc`
+**The Docker image gets an encrypted keystore instead.** While the image is built, the secrets
+(`GEMINI_API_KEY`, `OPENAI_API_KEY`, `HF_TOKEN`, `IMAP_PASSWORD`, `IMAP_OAUTH_TOKEN`) are moved into `/app/keystore.enc`
 (AES via Fernet, key from the password via scrypt). The image's copy of `.env` has only references, like
 `HF_TOKEN=keystore:HF_TOKEN`, and the agent looks them up when it starts.
 
@@ -334,7 +334,7 @@ They contain customer email text. Set `OTEL_CAPTURE_CONTENT=false` in `.env` to 
 
 ---
 
-## 9. Running the tests
+## 9. Running the tests and evals
 
 ```bash
 pytest                       # all offline tests (no key, no network)
@@ -345,6 +345,47 @@ ruff check . && ruff format --check .   # code style
 
 The tests fake IMAP, SMTP and the LLM. One end-to-end test checks that all 23 mock emails get the
 expected result. The same checks run on GitHub Actions for every push (`.github/workflows/ci.yml`).
+
+### Evals: how good is the agent with a real LLM?
+
+The tests use a fake LLM, so they can't tell you whether the real model classifies well or writes good
+replies. The evals can. They run the real agent (same prompt, tools and guardrails) on
+`data/eval_set.json`: 36 labeled emails that are **not** in the demo inbox (every category, 8 attacks, and
+edge cases like auto-replies and follow-ups), and score each one with [DeepEval](https://deepeval.com):
+
+| Check | What it means |
+|---|---|
+| Status / Category | The email got the expected outcome and category |
+| Attack contained | Every attack ends in quarantine or review, with no reply and no leaked secret |
+| Reply checks | The reply has the facts it must (amount, invoice no., attachment names), none it must not, and a signature |
+| Fields | Extracted amount, reference, period and due date are right |
+| LLM judge (`--judge`) | A second LLM scores each reply for grounding, tone and helpfulness (DeepEval GEval, pass = 0.7) |
+
+```bash
+docker compose run --rm evals                    # up to 15 new LLM requests, then stops
+docker compose run --rm evals --judge            # also grade the replies with an LLM judge
+docker compose run --rm evals --max-calls 0      # re-score only what's cached: no requests at all
+docker compose run --rm evals --judge --judge-provider openai  # judge with OpenAI (OPENAI_API_KEY in .env)
+docker compose run --rm evals --judge --judge-model gemini-2.5-flash   # or another model of the same provider
+```
+
+At the end you get a summary (pass rates, precision/recall per category, a confusion table), a JSON
+report in `output/evals/`, and **`output/evals/index.html`**: open it in a browser to see every run, the
+latest scores, and each case with its reply and the reason behind every check (`python -m evals.page`
+rebuilds it).
+
+- **It never sends mail** and never saves drafts.
+- `./start.sh` / `.\start.ps1` builds the evals image too. After you change `.env`, run it again so the
+  evals get the new secrets.
+- **It fits a free API key.** Every LLM reply is saved in `output/evals/cache/`, so a rerun only asks the
+  LLM about things that changed. A run stops after `--max-calls` new requests (default 15) and the
+  remaining cases show as *pending*. Run it again (the next day, on the free tier) to continue. A full
+  first run needs about 25-40 requests for the agent and about 20 for the judge. `--fresh` ignores the cache.
+- **The judge is checked too.** Four hand-written replies (`p01`-`p04`: three bad, one good) are graded
+  first. If the judge passes a bad one, the summary says `UNRELIABLE`.
+- Eval runs are kept off the Grafana dashboard, so they don't count as real emails.
+- To add a case, copy one in `data/eval_set.json` and set its `expect` block. `pytest tests/test_evals.py`
+  checks that a perfect LLM would pass it (this catches impossible labels).
 
 ---
 
@@ -405,7 +446,7 @@ email_agent/          the agent (start reading at main.py, then agent.py)
   agent.py            the per-email pipeline and the LLM tool loop
   guardrails.py       all safety checks (input cleaning, injection, output checks)
   tools.py            the 2 tools the AI may call (submit a triage, submit a reply)
-  llm.py              Gemini and Hugging Face HTTP clients
+  llm.py              Gemini, OpenAI and Hugging Face HTTP clients
   mailbox.py          mock inbox and IMAP mailbox
   actions.py          what happens after a decision: logs, drafts, labels, sending
   sender.py           SMTP sending (only with AUTO_SEND)
@@ -417,7 +458,9 @@ email_agent/          the agent (start reading at main.py, then agent.py)
   telemetry.py        OpenTelemetry setup
 config/               provider profiles (gmail, outlook, yahoo) - no secrets
 data/mock_inbox.json  23 sample emails, including 6 attack emails
+data/eval_set.json    36 labeled eval emails + 4 judge probes
 tests/                offline test suite
+evals/                evals with a real LLM (DeepEval): runner, metrics, report
 observability/        Collector, Tempo, Loki, Prometheus and Grafana config
 ```
 
@@ -427,7 +470,8 @@ observability/        Collector, Tempo, Loki, Prometheus and Grafana config
 
 | Problem | Fix |
 |---|---|
-| `quota exhausted` or HTTP 429 | The free Gemini daily limit is used up. Wait until tomorrow, use a smaller `--limit`, try another `GEMINI_MODEL`, or switch to `LLM_PROVIDER=huggingface` with `HF_TOKEN`. Emails that were not handled are picked up on the next run. |
+| `quota exhausted` or HTTP 429 | The free Gemini daily limit is used up. Wait until tomorrow, use a smaller `--limit`, try another `GEMINI_MODEL`, or switch to `LLM_PROVIDER=openai` (with `OPENAI_API_KEY`) or `huggingface` (with `HF_TOKEN`). Emails that were not handled are picked up on the next run. |
+| `openai quota exhausted: You exceeded your current quota` | The OpenAI account has no credit left. Add credit at platform.openai.com (billing) or use another provider. |
 | `Set GEMINI_API_KEY ...` | The key is missing: add it to `.env` and run `./start.sh` again (or just run locally). |
 | `keystore password file ... is missing` | Start with `./start.sh` (it passes `keystore_password` to Docker). |
 | `HF_TOKEN points to keystore:HF_TOKEN, which is not in the keystore` | Your `.env` should have the real value, not the reference. Fix it and run `./start.sh` again. |

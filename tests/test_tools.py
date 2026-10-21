@@ -50,6 +50,14 @@ def test_tool_schemas_are_flat(dialect):
     assert "out_of_scope" in triage["properties"]["category"]["enum"]
 
 
+@pytest.mark.parametrize("dialect", ["gemini", "openai"])
+def test_fields_are_required_so_models_dont_skip_them(dialect):
+    assert "fields" in tool_schemas(dialect)[0]["parameters"]["required"]
+    without = {key: value for key, value in TRIAGE.items() if key != "fields"}
+    assert "fields: Field required" in session().call("submit_triage", without)
+    assert session().call("submit_triage", {**TRIAGE, "fields": {}}).startswith("ok")  # empty is fine
+
+
 def test_gemini_schema_uses_nullable_instead_of_anyof():
     text = json.dumps(tool_schemas("gemini"))
     assert "anyOf" not in text and "additionalProperties" not in text

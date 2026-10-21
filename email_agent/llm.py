@@ -1,4 +1,4 @@
-"""Thin HTTP clients for Gemini and Hugging Face. Both take the same neutral messages
+"""Thin HTTP clients for Gemini, Hugging Face and OpenAI. Both take the same neutral messages
 and return the same LLMReply, so the agent loop doesn't care which one is used.
 
 Neutral messages:
@@ -132,6 +132,8 @@ class _HttpClient:
                 raise FatalLLMError(f"{self.system} returned HTTP {response.status_code}: {_error_message(response)}")
 
             if response.status_code == 429:
+                if "insufficient_quota" in response.text:  # OpenAI: no credit left, waiting won't help
+                    raise QuotaExhausted(f"{self.system} quota exhausted: {_error_message(response)}")
                 wanted = _rate_limit_delay(response)
                 if wanted and wanted > MAX_RATE_LIMIT_WAIT:  # waiting won't help today - fail fast
                     raise QuotaExhausted(f"{self.system} quota exhausted; retry in {wanted:.0f}s")
@@ -168,9 +170,10 @@ class GeminiClient(_HttpClient):
         payload = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": self._contents(messages),
-            "tools": [{"functionDeclarations": tools}],
             "generationConfig": {"temperature": 0},
         }
+        if tools:  # no tools = a plain text answer (the eval judge)
+            payload["tools"] = [{"functionDeclarations": tools}]
         url = f"{self.BASE_URL}/{self.model}:generateContent"
         data = self._post(url, {"x-goog-api-key": self.api_key}, payload)
 
@@ -216,6 +219,7 @@ class HuggingFaceClient(_HttpClient):
 
     system = "huggingface"
     URL = "https://router.huggingface.co/v1/chat/completions"
+    MAX_TOKENS = "max_tokens"
 
     def __init__(self, token: str, model: str, **kw):
         super().__init__(model, **kw)
@@ -225,11 +229,12 @@ class HuggingFaceClient(_HttpClient):
         payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system_prompt}] + [self._message(m) for m in messages],
-            "tools": [{"type": "function", "function": tool} for tool in tools],
-            "tool_choice": "auto",
             "temperature": 0,
-            "max_tokens": 1024,
+            self.MAX_TOKENS: 1024,
         }
+        if tools:
+            payload["tools"] = [{"type": "function", "function": tool} for tool in tools]
+            payload["tool_choice"] = "auto"
         data = self._post(self.URL, {"Authorization": f"Bearer {self.token}"}, payload)
 
         message = data["choices"][0]["message"]
@@ -275,3 +280,11 @@ class HuggingFaceClient(_HttpClient):
         if msg["role"] == "tool":
             return {"role": "tool", "tool_call_id": msg["tool_call_id"], "name": msg["name"], "content": msg["content"]}
         return {"role": "user", "content": msg["content"]}
+
+
+class OpenAIClient(HuggingFaceClient):
+    """OpenAI chat completions: the same request and reply format as the Hugging Face router."""
+
+    system = "openai"
+    URL = "https://api.openai.com/v1/chat/completions"
+    MAX_TOKENS = "max_completion_tokens"  # OpenAI's current name; newer models reject max_tokens

@@ -1,5 +1,6 @@
 """Optional: runs a few mock emails through a real LLM. Run with: pytest -m live
-Needs GEMINI_API_KEY (or LLM_PROVIDER=huggingface + HF_TOKEN) in the environment or .env (keystore references work)."""
+Needs GEMINI_API_KEY (or LLM_PROVIDER=openai + OPENAI_API_KEY, or huggingface + HF_TOKEN) in the environment
+or .env (keystore references work)."""
 
 import json
 
@@ -19,7 +20,7 @@ SAMPLES = ["m01", "m03", "m05", "m08", "m11", "m14"]
 
 def test_real_llm_classifies_samples(tmp_path):
     settings = load_settings(None).model_copy(update={"output_dir": tmp_path})
-    if not (settings.gemini_api_key or settings.hf_token):
+    if not (settings.gemini_api_key or settings.openai_api_key or settings.hf_token):
         pytest.skip("no LLM credentials configured")
     inbox = tmp_path / "inbox.json"
     inbox.write_text(json.dumps([EXPECTED[i] for i in SAMPLES]), encoding="utf-8")

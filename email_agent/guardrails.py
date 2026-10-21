@@ -208,7 +208,7 @@ STRONG_PATTERNS = {
     "ignore_instructions": r"\b(ignore|disregard|forget|override)\b.{0,40}?\b(previous|prior|above|earlier|all|your)\b"
     r".{0,20}?\b(instructions?|rules|prompts?|directions)\b",
     "role_marker": r"(^|\n)[\s>]*(system|assistant)\s*:|<\|im_(start|end)\|>|\[/?INST\]|<<SYS>>",
-    "tool_name": r"\b(read_email|submit_triage|submit_reply)\b",
+    "tool_name": r"\b(submit_triage|submit_reply)\b",
     "mass_forward": r"\b(forward|send|share)\b.{0,30}\b(all|every|these|this)\b.{0,10}"
     r"\b(emails?|messages?|mailbox|conversations?)\b",
     "bank_detail_change": r"\b(change|update|modify|replace)\b.{0,30}"

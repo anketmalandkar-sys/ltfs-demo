@@ -44,12 +44,10 @@ def oracle(email_id, step):
     """A well-behaved LLM that knows the right category for each mock email."""
     category = EXPECTED[email_id]["expected_category"] or "out_of_scope"
     if step == 0:
-        return call("read_email", email_id=email_id)
-    if step == 1:
         return call(
             "submit_triage", email_id=email_id, category=category, confidence=0.9, priority="P2", summary="Summary"
         )
-    if step == 2:
+    if step == 1:
         return call("submit_reply", email_id=email_id, subject="Re: your email", body=GROUNDED_REPLY)
     return LLMReply(text="Done.")
 
@@ -183,7 +181,7 @@ def test_unknown_tool_and_wrong_email_id_are_refused_and_reported_back(tmp_path)
             return LLMReply(
                 tool_calls=[
                     ToolCall(id="a", name="send_email", args={"to": "x@y.com"}),
-                    ToolCall(id="b", name="read_email", args={"email_id": "m01"}),
+                    ToolCall(id="b", name="submit_reply", args={"email_id": "m01", "subject": "x", "body": "x"}),
                 ]
             )
         return oracle(email_id, step - 1)
@@ -199,7 +197,7 @@ def test_unknown_tool_and_wrong_email_id_are_refused_and_reported_back(tmp_path)
 def test_max_steps_stops_a_looping_llm(tmp_path):
     agent, llm = make_agent(
         tmp_path,
-        script=lambda i, s: call("read_email", email_id=i),
+        script=lambda i, s: call("submit_reply", email_id=i, subject="Re: x", body="Hi"),  # never triaged
         inbox=single_email_inbox(tmp_path, "m08"),
         max_steps=4,
     )
@@ -209,7 +207,7 @@ def test_max_steps_stops_a_looping_llm(tmp_path):
 
 def test_ungrounded_reply_is_held_for_review(tmp_path):
     def script(email_id, step):
-        if step == 2:
+        if step == 1:
             return call(
                 "submit_reply",
                 email_id=email_id,
@@ -227,7 +225,7 @@ def test_ungrounded_reply_is_held_for_review(tmp_path):
 
 def test_unverified_payment_status_is_held_for_review(tmp_path):
     def script(email_id, step):  # replays what gemini-3.5-flash-lite wrote for m06
-        if step == 2:
+        if step == 1:
             return call(
                 "submit_reply",
                 email_id=email_id,
@@ -286,9 +284,9 @@ def test_fatal_llm_error_stops_the_run_and_costs_no_attempt(tmp_path, spans, err
 
 
 def test_budget_stops_the_run(tmp_path):
-    agent, llm = make_agent(tmp_path, max_llm_calls_per_run=3)
+    agent, llm = make_agent(tmp_path, max_llm_calls_per_run=2)
     results = agent.run(limit=50).results
-    assert len(llm.calls) == 3
+    assert len(llm.calls) == 2
     assert [r.email_id for r in results] == ["m01"]
 
 
@@ -309,10 +307,10 @@ def test_system_prompt_has_rules_categories_and_canary_but_no_email():
 def test_email_content_reaches_llm_only_inside_nonce_tags(tmp_path):
     agent, llm = make_agent(tmp_path, inbox=single_email_inbox(tmp_path, "m08"))
     agent.run(limit=1)
-    first_user, *rest = llm.calls[-1][2]
-    assert "deducted twice on 5 Oct" not in first_user["content"]
-    tool_result = next(m for m in rest if m["role"] == "tool")["content"]
-    assert re.match(r'<email_content nonce="[0-9a-f]{16}">', tool_result)
+    first_user = llm.calls[-1][2][0]["content"]
+    match = re.search(r'<email_content nonce="([0-9a-f]{16})">.*</email_content nonce="\1">', first_user, re.S)
+    assert match and "deducted twice on 5 Oct" in match.group(0)
+    assert "deducted twice" not in first_user.replace(match.group(0), "")
 
 
 def test_spans(tmp_path, spans):
@@ -321,8 +319,8 @@ def test_spans(tmp_path, spans):
     finished = spans.get_finished_spans()
     names = [s.name for s in finished]
     assert names.count("agent.run") == 1 and names.count("email.process") == 1
-    assert names.count("llm.chat") == 3
-    assert {"tool.read_email", "tool.submit_triage", "tool.submit_reply"} <= set(names)
+    assert names.count("llm.chat") == 2
+    assert {"tool.submit_triage", "tool.submit_reply"} <= set(names)
     process = next(s for s in finished if s.name == "email.process")
     assert process.attributes["triage.status"] == "drafted"
     assert process.attributes["triage.category"] == "customer_complaint"
@@ -355,14 +353,14 @@ def test_captured_llm_request_and_response_are_on_spans_and_in_logs(tmp_path, sp
         agent.run(limit=1)
     requests = [e["gen_ai.prompt"] for e in llm_events(spans, "gen_ai.request")]
     responses = [e["gen_ai.completion"] for e in llm_events(spans, "gen_ai.response")]
-    assert len(requests) == len(responses) == 3
+    assert len(requests) == len(responses) == 2
     assert "You triage emails" in requests[0]  # system prompt, raw
-    assert "deducted twice" in requests[1]  # the email text the model read (tool result)
-    assert '"submit_triage"' in responses[1] and '"customer_complaint"' in responses[1]
+    assert "deducted twice" in requests[0]  # the email text, in the first user message
+    assert '"submit_triage"' in responses[0] and '"customer_complaint"' in responses[0]
     logged = [r for r in caplog.records if getattr(r, "event", None) in ("llm.request", "llm.response")]
     # content goes in the log line itself, so Loki's line filter (|= "...") finds it
-    assert len(logged) == 6 and "deducted twice" in logged[2].getMessage()
-    assert '"submit_triage"' in logged[3].getMessage()
+    assert len(logged) == 4 and "deducted twice" in logged[0].getMessage()
+    assert '"submit_triage"' in logged[1].getMessage()
     assert logged[0].__dict__["email.id"] == "m08"
 
 
@@ -374,7 +372,7 @@ def test_without_capture_no_content_in_logs(tmp_path, caplog):
     assert "deducted twice" not in dump and "CANARY" not in dump
     # LLM calls are still logged (for counts, tokens, latency) - just without the text
     responses = [r for r in caplog.records if getattr(r, "event", None) == "llm.response"]
-    assert len(responses) == 3 and responses[0].getMessage() == "LLM response: email m08, step 0"
+    assert len(responses) == 2 and responses[0].getMessage() == "LLM response: email m08, step 0"
     assert {"llm.input_tokens", "llm.output_tokens", "llm.duration_s"} <= set(responses[0].__dict__)
 
 
@@ -414,7 +412,7 @@ def test_each_step_is_logged_with_metadata(tmp_path, caplog):
     with caplog.at_level("INFO", logger="email_agent"):
         agent.run(limit=1)
     events = [getattr(r, "event", None) for r in caplog.records]
-    assert events.count("tool.call") == 3
+    assert events.count("tool.call") == 2
     assert {"email.received", "email.decided"} <= set(events)
     decided = next(r for r in caplog.records if getattr(r, "event", None) == "email.decided")
     assert (decided.__dict__["email.status"], decided.__dict__["email.category"]) == ("drafted", "customer_complaint")
@@ -478,16 +476,16 @@ def test_tokens_and_estimated_cost_per_call_and_per_run(tmp_path, spans, caplog,
     assert responses[0]["llm.cost_usd"] == pytest.approx(per_call)
     llm_span = next(s for s in spans.get_finished_spans() if s.name == "llm.chat")
     assert llm_span.attributes["gen_ai.usage.cost_usd"] == pytest.approx(per_call)
-    assert recorded("llm_cost", provider="fake") == pytest.approx(3 * per_call)
-    assert (agent.tokens["input"], agent.tokens["output"]) == (3000, 600)
-    assert agent.cost_usd == pytest.approx(3 * per_call)
+    assert recorded("llm_cost", provider="fake") == pytest.approx(2 * per_call)
+    assert (agent.tokens["input"], agent.tokens["output"]) == (2000, 400)
+    assert agent.cost_usd == pytest.approx(2 * per_call)
 
 
 def test_cost_is_zero_without_prices(tmp_path, caplog):
     agent, _ = make_agent(tmp_path, script=with_usage, inbox=single_email_inbox(tmp_path, "m08"))
     with caplog.at_level("INFO", logger="email_agent"):
         agent.run(limit=1)
-    assert agent.cost_usd == 0 and agent.tokens["input"] == 3000
+    assert agent.cost_usd == 0 and agent.tokens["input"] == 2000
 
 
 def test_thank_you_reply_is_recorded_but_never_answered(tmp_path):
@@ -509,6 +507,12 @@ def test_thank_you_reply_is_recorded_but_never_answered(tmp_path):
     # recorded in full (unlike ignored emails), so it shows up in results and on the dashboard
     record = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()][-1]
     assert record["status"] == "no_reply" and record["subject"] == "Re: EMI deducted twice"
+
+
+def test_kyc_guidance_never_reports_missing_attachments_or_invents_documents():
+    prompt = build_system_prompt("C")
+    assert "never say that attachments are missing" in prompt
+    assert "Never list documents yourself" in prompt
 
 
 def test_prompt_forbids_claiming_actions():

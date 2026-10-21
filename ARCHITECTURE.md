@@ -4,7 +4,7 @@ This document explains how the agent works inside. For setup, see [README.md](RE
 
 In one paragraph: the agent reads emails (from any IMAP mailbox or a mock inbox), puts each one into a
 fixed business category, and prepares a matching reply. An LLM (Gemini or a Hugging Face model)
-does the reading and writing, but only through three narrow **tools**. Plain-code **guardrails** check
+does the reading and writing, but only through two narrow **tools**. Plain-code **guardrails** check
 everything before the LLM sees an email and again after it answers. Only clean replies in allowed
 categories are sent (`AUTO_SEND`, on by default); everything else stays a draft (section 5).
 
@@ -156,7 +156,7 @@ flowchart TD
     I -- yes --> Q["quarantined<br/>(LLM never sees it)"]
     I -- no --> J{bulk and nothing<br/>business-related?}
     J -- yes --> IGN2[ignored]
-    J -- no --> K["LLM tool loop<br/>read_email, submit_triage, submit_reply"]
+    J -- no --> K["LLM tool loop<br/>submit_triage, submit_reply"]
     K --> L["check_result<br/>confidence, weak signals, sender, grounding, canary"]
     Q --> L
     IGN --> L
@@ -193,15 +193,12 @@ sequenceDiagram
 
     A->>G: sanitize + inspect(email)
     G-->>A: clean email, Inspection (not blocked)
-    A->>L: system prompt (rules, categories, canary) + "Triage email id 'm08'"
-    L-->>A: tool_call read_email(email_id)
-    A->>T: call("read_email")
-    Note over T: email_id pinned to m08<br/>args validated by Pydantic
+    A->>T: prompt()
     T-->>A: sanitized email wrapped in random-nonce email_content tags
-    A->>L: tool result
+    A->>L: system prompt (rules, categories, canary) + "Triage email id 'm08'" + wrapped email
     L-->>A: tool_call submit_triage(category, confidence, …)
     A->>T: call("submit_triage")
-    Note over T: must follow read_email<br/>only once, enum-checked
+    Note over T: email_id pinned to m08<br/>args validated by Pydantic<br/>only once, enum-checked
     T-->>A: "ok: now call submit_reply"
     A->>L: tool result
     L-->>A: tool_call submit_reply(subject, body)
@@ -286,7 +283,7 @@ The agent assumes every email is hostile. The goal: a successful injection can a
 | 3 | Drop quoted history (`>` lines, "On ... wrote:", original/forwarded blocks), so an old thread can't carry instructions | `guardrails.strip_quoted` |
 | 4 | Scan the **raw** email (hidden text and quotes included). **Strong** hits are quarantined before any LLM call: "ignore previous instructions", role markers (`system:`, `<\|im_start\|>`, `[INST]`), our tool names, mass-forward requests, requests to change a beneficiary or bank details. **Weak** hits ("act as", "system prompt", long encoded blobs, hidden text) mean no automatic reply | `guardrails.detect_injection`, `inspect` |
 | 5 | Sender checks: SPF/DKIM/DMARC failure, a brand name on a free-mail address, a different Reply-To. Two or more signals quarantine the email; one signal sends financial categories to review | `guardrails.sender_signals` |
-| 6 | Structural isolation. Instructions exist only in the system prompt. The email reaches the model only as a tool result inside `<email_content nonce="random">`, and look-alike tags in the body are escaped | `tools.render_email` |
+| 6 | Structural isolation. Instructions exist only in the system prompt. The email reaches the model only in the first user message, inside `<email_content nonce="random">`, and look-alike tags in the body are escaped | `tools.render_email` |
 | 7 | Least privilege. The model can read one email (its id is pinned) and submit a triage and a reply. It has no tool to send, forward, list or fetch, and every email gets a fresh context | `tools.ToolSession` |
 | 8 | Output checks. A canary token catches system-prompt leaks. Every number in a reply must appear in the email. URLs, email addresses, phone numbers and promises ("we will refund") are blocked. So are payment statuses the email never states ("is being processed", "will be credited") and claims of actions nobody took ("has been sent to accounts payable", "we have notified the team"; "escalated" is allowed only for escalated incidents). Reply-To is never used as the recipient | `guardrails.check_result`, `mailbox.build_reply` |
 | 9 | IDs, contacts and links come only from code. `{ticket_id}`, `{sla}` and `{signature}` are filled in after the checks. The ticket id is a hash of the email (`LTFS-1A2B3C4D`), so reprocessing gives the same one. An LLM-written closing right above `{signature}` is dropped to avoid signing off twice | `actions.fill_placeholders` |
@@ -399,7 +396,7 @@ classDiagram
     RunReport --> EmailResult
 ```
 
-The tool argument models (`ReadEmailArgs`, `SubmitTriageArgs`, `SubmitReplyArgs`) are Pydantic models too.
+The tool argument models (`SubmitTriageArgs`, `SubmitReplyArgs`) are Pydantic models too.
 Their `model_json_schema()` output is flattened into each provider's function declarations.
 
 ---
@@ -522,8 +519,7 @@ agent.run                                   emails.processed=1
     │                                       triage.confidence=0.9  guardrail.flag_count=0
     ├── llm.chat                            gen_ai.system=gemini  gen_ai.request.model=gemini-2.5-flash
     │   └── POST (requests instrumentation)  gen_ai.usage.input_tokens / output_tokens  agent.step=0
-    ├── tool.read_email                     tool.ok=true
-    ├── llm.chat ── tool.submit_triage
+    ├── tool.submit_triage                  tool.ok=true
     ├── llm.chat ── tool.submit_reply
     └── mailbox.save_draft                  (unless sent)         draft.created=true|false
 ```

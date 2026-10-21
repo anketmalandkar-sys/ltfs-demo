@@ -42,18 +42,18 @@ def walk(node):
 @pytest.mark.parametrize("dialect", ["gemini", "openai"])
 def test_tool_schemas_are_flat(dialect):
     schemas = tool_schemas(dialect)
-    assert [s["name"] for s in schemas] == ["read_email", "submit_triage", "submit_reply"]
+    assert [s["name"] for s in schemas] == ["submit_triage", "submit_reply"]
     text = json.dumps(schemas)
     assert "$ref" not in text and "$defs" not in text
     assert all("title" not in node for node in walk([s["parameters"] for s in schemas]))
-    triage = schemas[1]["parameters"]
+    triage = schemas[0]["parameters"]
     assert "out_of_scope" in triage["properties"]["category"]["enum"]
 
 
 def test_gemini_schema_uses_nullable_instead_of_anyof():
     text = json.dumps(tool_schemas("gemini"))
     assert "anyOf" not in text and "additionalProperties" not in text
-    priority = tool_schemas("gemini")[1]["parameters"]["properties"]["priority"]
+    priority = tool_schemas("gemini")[0]["parameters"]["properties"]["priority"]
     assert priority["nullable"] is True and priority["enum"] == ["P1", "P2", "P3", "P4"]
 
 
@@ -67,7 +67,6 @@ def test_render_email_wraps_in_nonce_and_escapes_fake_tags():
 
 def test_happy_path_complaint():
     s = session()
-    assert "EMI deducted twice" in s.call("read_email", {"email_id": "e1"})
     assert s.call("submit_triage", TRIAGE).startswith("ok")
     assert not s.done
     assert s.call("submit_reply", REPLY).startswith("ok")
@@ -78,7 +77,6 @@ def test_happy_path_complaint():
 
 def test_no_reply_category_is_done_after_triage():
     s = session()
-    s.call("read_email", {"email_id": "e1"})
     s.call("submit_triage", {**TRIAGE, "category": "bank_statement"})
     assert s.done
     assert s.call("submit_reply", REPLY).startswith("error")
@@ -87,7 +85,6 @@ def test_no_reply_category_is_done_after_triage():
 
 def test_out_of_scope():
     s = session()
-    s.call("read_email", {"email_id": "e1"})
     assert s.call("submit_triage", {**TRIAGE, "category": "out_of_scope"}).startswith("ok")
     assert s.done and s.out_of_scope and s.triage is None
 
@@ -96,23 +93,26 @@ def test_out_of_scope():
     "name, args, expected",
     [
         ("send_email", {"email_id": "e1"}, "unknown tool"),
-        ("read_email", {"email_id": "other"}, "email_id"),
-        ("read_email", {}, "invalid arguments"),
+        ("submit_triage", {**TRIAGE, "email_id": "other"}, "email_id"),
+        ("submit_triage", {}, "invalid arguments"),
         ("submit_triage", {**TRIAGE, "confidence": 2}, "invalid arguments"),
         ("submit_triage", {**TRIAGE, "category": "lottery"}, "invalid arguments"),
     ],
 )
 def test_rejected_calls(name, args, expected):
     s = session()
-    s.call("read_email", {"email_id": "e1"})
     result = s.call(name, args)
     assert result.startswith("error") and expected in result
 
 
+def test_prompt_carries_the_email_inside_nonce_tags():
+    prompt = session().prompt()
+    assert prompt.startswith("Triage the email with id 'e1':\n")
+    assert prompt.endswith(render_email(EMAIL, "n0nce"))
+
+
 def test_order_rules():
     s = session()
-    assert "read_email first" in s.call("submit_triage", TRIAGE)
-    s.call("read_email", {"email_id": "e1"})
     assert "submit_triage first" in s.call("submit_reply", REPLY)
     s.call("submit_triage", TRIAGE)
     assert "already" in s.call("submit_triage", TRIAGE)

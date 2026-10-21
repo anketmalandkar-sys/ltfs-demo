@@ -36,7 +36,7 @@ a vault). Do not push images built from a real `.env` to a public registry.
 
 ## Least privilege
 
-- The AI has only three tools: read the one email it was given, submit a triage, submit a reply.
+- The AI sees only the one email it was given and has only two tools: submit a triage, submit a reply.
   It cannot send, forward, open links or see other emails.
 - The mailbox is opened read-only when labels are off (`--no-apply-labels`), and emails always stay unread.
 - Sending is on by default, but only clean replies (no guardrail flag) in allowed categories are sent,

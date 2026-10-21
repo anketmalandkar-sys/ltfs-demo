@@ -53,7 +53,7 @@ You need:
 | A mailbox login *(optional)* | Only to try a real inbox | See [section 5](#5-connect-a-real-mailbox) |
 
 > **Free Gemini keys have a small daily limit** (about 20 requests a day on `gemini-2.5-flash`).
-> The agent makes about **3 requests per email**, and many emails (attacks, auto-replies) need none.
+> The agent makes about **1-2 requests per email**, and many emails (attacks, auto-replies) need none.
 > For a first try, use `--limit 5` (the default is 10). If you hit the limit, see [Troubleshooting](#13-troubleshooting).
 
 You do **not** need an API key to run the tests. They are fully offline.

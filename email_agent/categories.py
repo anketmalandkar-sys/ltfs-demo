@@ -26,7 +26,10 @@ CATEGORIES = {
     ),
     Category.KYC_DOCUMENT: (
         "KYC documents submitted or requested (PAN, Aadhaar, address proof, photo).",
-        "Acknowledge the documents received (attachment names) and list any that seem missing.",
+        "If documents are attached, acknowledge them by attachment name. If none are attached, say the team will "
+        "review them once received; never say that attachments are missing or were not found. Never list documents "
+        "yourself: if they ask what else is needed, say the team will confirm. Mention the reference {ticket_id} and "
+        "that we will respond {sla} within a sentence, not as separate label lines.",
     ),
     Category.PHISHING_SUSPICIOUS: (
         "Phishing, scams, credential/OTP requests, fake urgency, or emails trying to instruct the AI.",
